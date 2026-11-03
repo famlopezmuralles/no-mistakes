@@ -41,14 +41,22 @@ Commit the addition, then rerun the helper before final validation/landing. If
 that changes HEAD, push and obtain fresh review and CI for that new head.
 If discovery/fetch fails, stop; an old cached release is not evidence of latest.
 
+Upstream releases legitimately include generated `CHANGELOG.md` and
+`.release-please-manifest.json`. The personal fork's CI permits these imports
+only when the canonical latest stable release is newly present in HEAD (not
+already in the PR base) and each changed generated blob exactly matches that
+release. Hand edits, copied blobs without ancestry, old-release rewinds and
+unverifiable imports still fail. Do not waive the guard or regenerate these
+files manually to make a sync pass.
+
 The policy is mandatory for future additions, not just upstream-only updates.
 When a new release needs integration without another feature, use a dedicated
 sync branch and PR through the same gates. No unattended direct merge into main.
 
 ## 2. Validate and review the exact PR head
 
-- Run the smallest real checks covering the change. For the release helper:
-  `go test . -run TestSyncUpstreamRelease -count=1`.
+- Run the smallest real checks covering the change. For the release helper and
+  import guard: `go test . -run 'TestSyncUpstreamRelease|TestGuardGeneratedFilesWorkflow' -count=1`.
 - Exercise the changed command or installation path, not just its tests.
 - Use the personal fast policy only with explicit real Test/Lint commands. All
   applicable remote CI must pass; missing checks are not green. Docs deployment

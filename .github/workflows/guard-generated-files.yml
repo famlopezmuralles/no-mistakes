@@ -35,10 +35,11 @@ jobs:
           # reflects exactly what GitHub shows as "Files changed".
           fetch-depth: 0
 
-      - name: Check PR does not modify release-please-generated files
+      - name: Reject hand edits or verify an unchanged upstream release import
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           files=$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
@@ -51,6 +52,36 @@ jobs:
           done
 
           if [ -n "$violated" ]; then
+            # The personal fork may import upstream's release-generated blobs,
+            # but only unchanged and as part of a genuinely new release merge.
+            if [ "${GITHUB_REPOSITORY:-}" = famlopezmuralles/no-mistakes ]; then
+              tag=$(gh api --hostname github.com repos/kunchenguid/no-mistakes/releases/latest \
+                --jq 'select(.draft == false and .prerelease == false) | .tag_name')
+              [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+                echo "::error::Could not establish the latest stable upstream release" >&2
+                exit 1
+              }
+              release_ref="refs/no-mistakes/upstream-releases/$tag"
+              git -c http.https://github.com/.extraheader= fetch --no-tags \
+                https://github.com/kunchenguid/no-mistakes.git "refs/tags/$tag:$release_ref"
+              release_sha=$(git rev-parse --verify "$release_ref^{commit}")
+              if ! git merge-base --is-ancestor "$release_sha" "$BASE_SHA" &&
+                 git merge-base --is-ancestor "$release_sha" "$HEAD_SHA"; then
+                unchanged=true
+                for path in $violated; do
+                  expected=$(git rev-parse --verify "$release_sha:$path")
+                  proposed=$(git rev-parse --verify "$HEAD_SHA:$path" 2>/dev/null) || proposed=""
+                  if [ "$expected" != "$proposed" ]; then
+                    unchanged=false
+                  fi
+                done
+                if [ "$unchanged" = true ]; then
+                  echo "Verified unchanged generated files from upstream $tag ($release_sha)."
+                  exit 0
+                fi
+              fi
+            fi
+
             {
               echo "::error::This PR modifies release-please-generated files:${violated}"
               echo

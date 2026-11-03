@@ -4,91 +4,145 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
-// TestGuardGeneratedFilesWorkflowCoversReleasePleaseArtifacts pins the list of
-// guarded paths. If release-please starts managing more files, add them here
-// and to the workflow together.
-func TestGuardGeneratedFilesWorkflowCoversReleasePleaseArtifacts(t *testing.T) {
+// Execute the workflow's actual shell consumer against real Git histories.
+// Release metadata is deterministic; blob identity and ancestry are not mocked.
+func TestGuardGeneratedFilesWorkflow(t *testing.T) {
 	data, err := os.ReadFile(".github/workflows/guard-generated-files.yml")
 	if err != nil {
-		t.Fatalf("read workflow: %v", err)
+		t.Fatal(err)
 	}
-	content := string(data)
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run string `yaml:"run"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var commands []string
+	for _, step := range workflow.Jobs["check"].Steps {
+		if step.Run != "" {
+			commands = append(commands, step.Run)
+		}
+	}
+	script := strings.Join(commands, "\n")
 
-	guarded := []string{
-		"CHANGELOG.md",
-		".release-please-manifest.json",
+	cases := []struct {
+		name       string
+		repository string
+		wantPass   bool
+		prepare    func(*syncReleaseFixture, string) string
+	}{
+		{
+			name: "ordinary-change-needs-no-upstream-api", wantPass: true,
+			prepare: func(f *syncReleaseFixture, base string) string {
+				f.env = append(f.env, "SYNC_API_FAIL=1")
+				f.write(f.repo, "documentation.md", "ordinary addition\n")
+				commitGeneratedGuardFixture(f, "ordinary addition")
+				return base
+			},
+		},
+		{
+			name: "unchanged-generated-blobs-with-new-release-ancestry", wantPass: true,
+			prepare: func(f *syncReleaseFixture, base string) string {
+				mergeGeneratedGuardRelease(f)
+				return base
+			},
+		},
+		{
+			name: "hand-edited-release-import",
+			prepare: func(f *syncReleaseFixture, base string) string {
+				mergeGeneratedGuardRelease(f)
+				f.write(f.repo, "CHANGELOG.md", "hand edited release notes\n")
+				commitGeneratedGuardFixture(f, "modify generated artifact")
+				return base
+			},
+		},
+		{
+			name: "matching-blobs-without-release-ancestry",
+			prepare: func(f *syncReleaseFixture, base string) string {
+				f.write(f.repo, "CHANGELOG.md", "canonical upstream release notes\n")
+				f.write(f.repo, ".release-please-manifest.json", "{\".\":\"1.2.0\"}\n")
+				commitGeneratedGuardFixture(f, "copy artifacts without importing release")
+				return base
+			},
+		},
+		{
+			name: "old-release-cannot-authorize-a-later-artifact-rewind",
+			prepare: func(f *syncReleaseFixture, _ string) string {
+				mergeGeneratedGuardRelease(f)
+				f.write(f.repo, "CHANGELOG.md", "later fork release notes\n")
+				commitGeneratedGuardFixture(f, "later fork release")
+				base := f.git(f.repo, "rev-parse", "HEAD")
+				f.write(f.repo, "CHANGELOG.md", "canonical upstream release notes\n")
+				commitGeneratedGuardFixture(f, "rewind generated artifact")
+				return base
+			},
+		},
+		{
+			name: "upstream-discovery-failure",
+			prepare: func(f *syncReleaseFixture, base string) string {
+				mergeGeneratedGuardRelease(f)
+				f.env = append(f.env, "SYNC_API_FAIL=1")
+				return base
+			},
+		},
+		{
+			name: "exception-does-not-apply-to-another-repository", repository: "another/no-mistakes",
+			prepare: func(f *syncReleaseFixture, base string) string {
+				mergeGeneratedGuardRelease(f)
+				return base
+			},
+		},
 	}
-	for _, path := range guarded {
-		if !strings.Contains(content, path) {
-			t.Errorf("workflow must guard %q", path)
-		}
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("guarded path %q not present in repo: %v", path, err)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSyncReleaseFixture(t)
+			f.write(f.upstream, "CHANGELOG.md", "canonical upstream release notes\n")
+			f.write(f.upstream, ".release-please-manifest.json", "{\".\":\"1.2.0\"}\n")
+			f.git(f.upstream, "add", "CHANGELOG.md", ".release-please-manifest.json")
+			f.git(f.upstream, "commit", "-m", "upstream generated release")
+			f.git(f.upstream, "tag", "-a", "v1.2.0", "-m", "new stable release")
+			f.writeRelease("v1.2.0\n")
+			base := tc.prepare(f, f.fork)
+			head := f.git(f.repo, "rev-parse", "HEAD")
+			repository := tc.repository
+			if repository == "" {
+				repository = "famlopezmuralles/no-mistakes"
+			}
+			// Do not inherit the real CI repository identity or its token.
+			var env []string
+			for _, entry := range f.env {
+				if !strings.HasPrefix(entry, "GITHUB_REPOSITORY=") && !strings.HasPrefix(entry, "GH_TOKEN=") {
+					env = append(env, entry)
+				}
+			}
+			f.env = append(env, "BASE_SHA="+base, "HEAD_SHA="+head, "GITHUB_REPOSITORY="+repository)
+			output, err := f.command(f.repo, "bash", "-c", script)
+			if (err == nil) != tc.wantPass {
+				t.Fatalf("want pass=%v, got err=%v\n%s", tc.wantPass, err, output)
+			}
+			if got := f.git(f.repo, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("guard moved caller HEAD: %s -> %s", head, got)
+			}
+		})
 	}
 }
 
-// TestGuardGeneratedFilesWorkflowExemptsReleasePlease ensures the release
-// pipeline's own PR (which legitimately modifies the generated files) is
-// always allowed through.
-func TestGuardGeneratedFilesWorkflowExemptsReleasePlease(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/guard-generated-files.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-	content := string(data)
-
-	for _, login := range []string{"github-actions[bot]", "release-please[bot]"} {
-		needle := "github.event.pull_request.user.login != '" + login + "'"
-		if !strings.Contains(content, needle) {
-			t.Errorf("workflow must exempt %q via %q", login, needle)
-		}
-	}
+func commitGeneratedGuardFixture(f *syncReleaseFixture, message string) {
+	f.t.Helper()
+	f.git(f.repo, "add", ".")
+	f.git(f.repo, "commit", "-m", message)
 }
 
-// TestGuardGeneratedFilesWorkflowUsesGitDiffWithFullHistory pins the
-// git-based file-diff approach. Using the API would add a permission surface
-// (pull-requests: read), rate-limit exposure, and pagination concerns; the
-// git three-dot diff matches exactly what GitHub shows in "Files changed".
-func TestGuardGeneratedFilesWorkflowUsesGitDiffWithFullHistory(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/guard-generated-files.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-	content := string(data)
-
-	if !strings.Contains(content, "actions/checkout") {
-		t.Errorf("workflow must check out the repo to run git diff locally")
-	}
-	if !strings.Contains(content, "fetch-depth: 0") {
-		t.Errorf("workflow must use fetch-depth: 0 so merge-base for base...head is available")
-	}
-	if !strings.Contains(content, `git diff --name-only "${BASE_SHA}...${HEAD_SHA}"`) {
-		t.Errorf("workflow must use 'git diff --name-only base...head' (three-dot) for PR file list")
-	}
-	if strings.Contains(content, "gh api") {
-		t.Errorf("workflow must not fall back to the GitHub API for file listing")
-	}
-	if strings.Contains(content, "pull-requests:") {
-		t.Errorf("workflow must not request pull-requests permission once switched to git diff")
-	}
-}
-
-// TestGuardGeneratedFilesWorkflowTriggersOnPushedCommits ensures the guard
-// re-runs when new commits are pushed to a PR (the synchronize event), so a
-// contributor cannot open a clean PR then push a commit that edits CHANGELOG.md.
-func TestGuardGeneratedFilesWorkflowTriggersOnPushedCommits(t *testing.T) {
-	data, err := os.ReadFile(".github/workflows/guard-generated-files.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-	content := string(data)
-
-	for _, typ := range []string{"opened", "synchronize", "reopened"} {
-		if !strings.Contains(content, typ) {
-			t.Errorf("workflow must trigger on pull_request type %q", typ)
-		}
-	}
+func mergeGeneratedGuardRelease(f *syncReleaseFixture) {
+	f.t.Helper()
+	f.git(f.repo, "fetch", "--no-tags", f.upstream, "refs/tags/v1.2.0:refs/fixture/guard-release")
+	f.git(f.repo, "merge", "--no-edit", "refs/fixture/guard-release^{commit}")
 }

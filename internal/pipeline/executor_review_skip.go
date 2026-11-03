@@ -38,6 +38,12 @@ func (e *Executor) validateSkippedReview(run *db.Run, repo *db.Repo) error {
 	if durable == nil {
 		return fmt.Errorf("validate skipped review: run is not recorded")
 	}
+	// Fast mode is a distinct, durably selected publication policy. Its Push
+	// guard requires configured-check evidence for the exact current head;
+	// skipping Review here neither grants nor fabricates review approval.
+	if durable.FastMode {
+		return nil
+	}
 	if durable.ReviewApprovedHeadSHA != nil && strings.TrimSpace(*durable.ReviewApprovedHeadSHA) != "" {
 		return nil
 	}

@@ -845,6 +845,7 @@ func TestCIStep_EmptyChecksWithTrustedNoCIBecomesReady(t *testing.T) {
 	sctx.Run.PRURL = &prURL
 	sctx.Config.CITimeout = 10 * time.Second
 	sctx.Config.NoCI = true
+	sctx.Config.CI.NoChecksTimeout = time.Nanosecond
 
 	var logs []string
 	sctx.Log = func(s string) { logs = append(logs, s) }
@@ -2821,5 +2822,175 @@ func TestCIStep_HeldWorkflowDoesNotDeferAGenuineFailureBesideIt(t *testing.T) {
 	}
 	if !strings.Contains(joined, cimonitor.ChecksAwaitingApprovalMsg) {
 		t.Errorf("escalation did not name the maintainer-approval hold; logs: %v", logs)
+	}
+}
+
+func TestCIStep_NoChecksTimeoutExpiresWithoutReadiness(t *testing.T) {
+	t.Parallel()
+	for _, unlimited := range []bool{false, true} {
+		t.Run(map[bool]string{false: "moving-base", true: "unlimited-monitor"}[unlimited], func(t *testing.T) {
+			dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+			prURL := "https://github.com/test/repo/pull/42"
+			ag := &stepstest.MockAgent{AgentName: "test"}
+			sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+			sctx.Env = stepstest.FakeCIGH(t, "OPEN", "[]")
+			sctx.Run.PRURL = &prURL
+			sctx.Config.CITimeout = time.Minute
+			if unlimited {
+				sctx.Config.CITimeout = config.CITimeoutUnlimited
+			}
+			sctx.Config.CI.NoChecksTimeout = 5 * time.Second
+			sctx.Config.CI.ReleaseAfterChecksPass = true
+			if err := sctx.DB.SetRunCIReady(sctx.Run.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			var logs []string
+			sctx.Log = func(message string) { logs = append(logs, message) }
+			started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+			current := started
+			baseCalls := 0
+			var waits []time.Duration
+			step := (&steps.CIStep{}).SetNow(func() time.Time { return current }).SetPollIntervalOverride(3 * time.Second).
+				SetBaseBranchTip(func(context.Context) (string, bool) {
+					baseCalls++
+					if baseCalls == 1 {
+						return baseSHA, true
+					}
+					return headSHA, true
+				}).SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+				waits = append(waits, interval)
+				if len(waits) > 2 {
+					t.Fatal("registration deadline did not stop missing-check polling")
+				}
+				current = current.Add(interval)
+				return nil
+			})
+			outcome, err := step.Execute(sctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !outcome.NeedsApproval || outcome.CIReadyNoCI != nil {
+				t.Fatalf("missing checks must block, got %+v", outcome)
+			}
+			findings, err := types.ParseFindingsJSON(outcome.Findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(findings.Summary, "No CI checks registered") || !strings.Contains(findings.Summary, "readiness is unverified") {
+				t.Fatalf("missing explicit unverified-readiness evidence: %+v", findings)
+			}
+			if len(findings.Items) != 1 || findings.Items[0].Action != types.ActionAskUser {
+				t.Fatalf("registration expiry must require an operator, got %+v", findings)
+			}
+			if len(waits) != 2 || waits[0] != 3*time.Second || waits[1] != 2*time.Second || current.Sub(started) != 5*time.Second {
+				t.Fatalf("registration budget was extended or not respected: %v, elapsed %s", waits, current.Sub(started))
+			}
+			dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dbRun.CIReadyAt != nil || cimonitor.ChecksPassed(logs) {
+				t.Fatalf("registration expiry must clear readiness; run=%+v logs=%v", dbRun, logs)
+			}
+			if len(ag.Calls) != 0 {
+				t.Fatalf("missing checks invoked an agent %d times", len(ag.Calls))
+			}
+		})
+	}
+}
+
+func TestCIStep_NoChecksTimeoutDoesNotCutOffRegisteredChecks(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = stepstest.FakeCIGHSequence(t, "OPEN", []string{
+		`[]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"PENDING","bucket":"pending"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+	})
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = time.Minute
+	sctx.Config.CI.NoChecksTimeout = 5 * time.Second
+	sctx.Config.CI.ReleaseAfterChecksPass = true
+	current := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	polls := 0
+	step := (&steps.CIStep{}).SetNow(func() time.Time { return current }).SetPollIntervalOverride(2 * time.Second).
+		SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).
+		SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+			polls++
+			dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dbRun.CIReadyAt != nil {
+				t.Fatal("empty or pending checks falsely reported readiness")
+			}
+			if polls > 3 {
+				t.Fatal("passing registered checks did not finish validation")
+			}
+			if polls == 1 {
+				current = current.Add(interval)
+			} else {
+				// Registered checks outlive their registration deadline.
+				current = current.Add(10 * time.Second)
+			}
+			return nil
+		})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome.NeedsApproval || outcome.CIReadyNoCI == nil || *outcome.CIReadyNoCI || polls != 3 {
+		t.Fatalf("expected real checks to complete after registration, got %+v, polls=%d", outcome, polls)
+	}
+}
+
+func TestCIStep_NoChecksTimeoutResetsForNewPublishedHead(t *testing.T) {
+	t.Parallel()
+	dir, upstream, baseSHA, headSHA := setupCIRerunRepo(t)
+	prURL := "https://github.com/test/repo/pull/42"
+	sctx := stepstest.NewTestContextWithDBRecords(t, &stepstest.MockAgent{AgentName: "test"}, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = stepstest.FakeCIGH(t, "OPEN", "[]")
+	sctx.Run.PRURL = &prURL
+	sctx.Repo.UpstreamURL = upstream
+	sctx.Config.CITimeout = time.Minute
+	sctx.Config.CI.NoChecksTimeout = 4 * time.Second
+	started := time.Date(2026, time.January, 1, 12, 0, 0, 0, time.UTC)
+	current := started
+	polls := 0
+	step := (&steps.CIStep{}).SetNow(func() time.Time { return current }).SetPollIntervalOverride(2 * time.Second).
+		SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).
+		SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+			polls++
+			current = current.Add(interval)
+			if polls == 1 {
+				if err := os.WriteFile(filepath.Join(dir, "fix.txt"), []byte("published fix"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				stepstest.GitCmd(t, dir, "add", "-A")
+				stepstest.GitCmd(t, dir, "commit", "-m", "no-mistakes(ci): apply fixes")
+				stepstest.GitCmd(t, dir, "push", "origin", "feature")
+				sctx.Run.HeadSHA = stepstest.GitCmd(t, dir, "rev-parse", "HEAD")
+				if err := sctx.DB.UpdateRunHeadSHA(sctx.Run.ID, sctx.Run.HeadSHA); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if polls > 3 {
+				t.Fatal("new published head registration deadline did not expire")
+			}
+			return nil
+		})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval || current.Sub(started) != 6*time.Second || polls != 3 {
+		t.Fatalf("new published head must get its own registration budget: outcome=%+v elapsed=%s polls=%d", outcome, current.Sub(started), polls)
+	}
+	if !strings.Contains(outcome.Findings, sctx.Run.HeadSHA) {
+		t.Fatalf("expiry must identify current published head, got %s", outcome.Findings)
 	}
 }

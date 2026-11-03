@@ -36,6 +36,9 @@ Repair scope:
 - In the evidence turn, when resolving a failure would require such a repair, report a warning finding with action "ask-user" instead of making the repair. Name the proposed repair and the intent restriction or product-policy change that needs a human decision. Do not classify that repair as "auto-fix".`
 
 func (s *TestStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if sctx.Config.FastMode {
+		return runFastChecks(sctx, s.Name())
+	}
 	if err := assertPipelineHeadContinuity(sctx, s.Name()); err != nil {
 		return nil, err
 	}

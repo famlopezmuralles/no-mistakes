@@ -1116,6 +1116,10 @@ func driveRunScoped(ctx context.Context, progress io.Writer, client *ipc.Client,
 			if !autoApprove {
 				return run, false, nil
 			}
+			if run.FastMode {
+				fmt.Fprintf(progress, "%s: fast_mode disables unattended repair and approval; --yes leaves this gate blocked for an explicit response\n", gate.Name)
+				return run, false, nil
+			}
 			if pipeline.HasProtectedPathRefusal(gate.FindingsJSON) {
 				fmt.Fprintf(progress, "%s: protected-path refusal requires an explicit response; --yes leaves this gate awaiting a response\n", gate.Name)
 				return run, false, nil
@@ -1440,7 +1444,7 @@ func renderDriveResultForRun(cmd *cobra.Command, run *ipc.RunInfo, ciReady bool,
 	}
 
 	if gate, ok := rv.awaitingStep(); ok {
-		fields = append(fields, gateFieldsForRun(gate, runID)...)
+		fields = append(fields, rv.gateFields(gate, runID, false)...)
 		emitDoc(cmd, fields...)
 		return nil
 	}

@@ -1648,6 +1648,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		CIReadyNoCI:        r.CIReadyNoCI,
 		PRBaseBranch:       r.PRBaseBranch,
 		OmitIntent:         r.OmitIntent,
+		FastMode:           r.FastMode,
 		QuotaRouting:       r.QuotaRouting,
 		PiProfile:          r.PiProfile,
 		VerificationPlan:   r.VerificationPlan,

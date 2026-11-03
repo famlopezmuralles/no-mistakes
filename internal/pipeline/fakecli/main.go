@@ -976,6 +976,14 @@ func fakeCIGlabHandler(args []string) {
 		fmt.Println(traceOutput)
 		os.Exit(0)
 	}
+	if strings.Contains(joined, "/versions?") {
+		versions := os.Getenv("FAKE_CLI_REVIEW_VERSIONS")
+		if versions == "" {
+			versions = "[]"
+		}
+		fmt.Println(versions)
+		os.Exit(0)
+	}
 	// The review-comment read asks for the merge request's discussion notes.
 	// FAKE_CLI_REVIEW_DISCUSSIONS is the raw array the discussions endpoint
 	// returns; an unset value answers an MR with no discussions.
@@ -1023,6 +1031,9 @@ func fakeCIGlabMRViewJSON(state, conflicts, mergeStatus, pipelineStatus string) 
 	if pipelineSHA != "" {
 		pipeline = fmt.Sprintf(`{"id":7,"sha":%q,"ref":%q,"status":%q,"web_url":"https://gitlab.com/test/repo/-/pipelines/7"}`,
 			pipelineSHA, pipelineRef, pipelineStatus)
+	}
+	if os.Getenv("FAKE_CLI_NO_HEAD_PIPELINE") == "1" {
+		pipeline = "null"
 	}
 	return fmt.Sprintf(`{"iid":42,"web_url":"https://gitlab.com/test/repo/-/merge_requests/42","sha":%q,"state":%q,"has_conflicts":%s,"detailed_merge_status":%q,"head_pipeline":%s}`,
 		sourceSHA, state, conflicts, mergeStatus, pipeline)

@@ -860,3 +860,76 @@ func TestCIStep_GitLabExternalStatusCheckRouteAbsentStillPasses(t *testing.T) {
 		t.Fatalf("expected checks-passed on an instance without external status checks, got: %v", logs)
 	}
 }
+
+func TestCIStep_GitLabRequiredReviewWithoutPipelineExpiresRegistration(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+	// A completed required review is real review evidence, but the adapter's
+	// accompanying "Pipeline registration" gate is not a registered CI job.
+	discussions := `[{"id":"d1","notes":[{"id":1,"created_at":"2026-09-08T12:00:00Z","author":{"id":42,"username":"account-42"},"resolvable":false,"resolved":false}]}]`
+	env := stepstest.FakeCIGlabWithReviewComments(t, "opened", "[]", discussions, headSHA)
+	env = append(env,
+		"FAKE_CLI_NO_HEAD_PIPELINE=1",
+		`FAKE_CLI_REVIEW_VERSIONS=[{"head_commit_sha":"`+headSHA+`","created_at":"2026-09-08T00:00:00Z"}]`,
+	)
+	prURL := "https://gitlab.com/test/repo/-/merge_requests/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContextWithDBRecords(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Repo.UpstreamURL = "https://gitlab.com/test/repo.git"
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = time.Minute
+	sctx.Config.CI.NoChecksTimeout = 5 * time.Second
+	sctx.Config.CI.RequiredReviews = []string{"coderabbit"}
+	sctx.Config.CI.RequiredReviewBotID = "42"
+	sctx.Config.CI.ReleaseAfterChecksPass = true
+	if err := sctx.DB.SetRunCIReady(sctx.Run.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	var logs []string
+	sctx.Log = func(message string) { logs = append(logs, message) }
+	started := time.Date(2026, time.September, 8, 13, 0, 0, 0, time.UTC)
+	current := started
+	polls := 0
+	step := (&steps.CIStep{}).SetNow(func() time.Time { return current }).
+		SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).
+		SetWaitForNextPoll(func(ctx context.Context, interval time.Duration) error {
+			polls++
+			if polls > 1 {
+				t.Fatal("synthetic pipeline-registration gate disabled the registration deadline")
+			}
+			if interval != 5*time.Second {
+				t.Fatalf("poll interval = %s, want registration budget of 5s", interval)
+			}
+			dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if dbRun.CIReadyAt != nil {
+				t.Fatal("completed review without a pipeline falsely preserved readiness")
+			}
+			current = current.Add(interval)
+			return nil
+		})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !outcome.NeedsApproval || outcome.AutoFixable || outcome.CIReadyNoCI != nil {
+		t.Fatalf("missing pipeline must block without repair/readiness, got %+v", outcome)
+	}
+	findings := gitlabCIFindings(t, outcome)
+	if len(findings.Items) != 1 || findings.Items[0].ID != "ci-no-checks-timeout" || findings.Items[0].Action != types.ActionAskUser {
+		t.Fatalf("expected registration-expiry finding, got %+v", findings)
+	}
+	if !strings.Contains(findings.Summary, "readiness is unverified") || current.Sub(started) != 5*time.Second || polls != 1 {
+		t.Fatalf("missing explicit bounded, unverified readiness: findings=%+v elapsed=%s polls=%d", findings, current.Sub(started), polls)
+	}
+	dbRun, err := sctx.DB.GetRun(sctx.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbRun.CIReadyAt != nil || strings.Contains(strings.Join(logs, "\n"), "all CI checks passed") || len(ag.Calls) != 0 {
+		t.Fatalf("missing pipeline must not become green or invoke an agent: run=%+v logs=%v calls=%d", dbRun, logs, len(ag.Calls))
+	}
+}

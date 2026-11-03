@@ -45,6 +45,53 @@ Push to `no-mistakes` instead of `origin`, and it spins up a disposable worktree
 
 Full documentation: <https://kunchenguid.github.io/no-mistakes/>
 
+## Personal fast policy (this fork)
+
+This fork adds an opt-in, operator-owned `fast_mode`. It is a lighter validation
+policy, not a claim that AI review or live-product validation happened faster.
+The normal upstream policy remains the default.
+
+The [personal preset](profiles/famlopezmuralles.yaml):
+
+- records Review and Document as skipped;
+- runs configured Test and Lint commands without validation agents or automatic
+  repairs, including when the driver uses `--yes`;
+- blocks missing commands, nonzero exits, and checks that change the pinned
+  checkout instead of declaring them passed;
+- keeps real CI mandatory, bounds missing-check registration to 60 seconds, and
+  releases the run when checks pass rather than waiting for a human merge;
+- pins the policy on new runs, so changing the global profile does not convert
+  an existing run during recovery.
+
+PR drafting may still use the configured agent. Command-only evidence does not
+claim successful live-product validation. Explicitly skipped checks remain
+visible omissions. CI jobs that have registered retain their normal execution
+budget; an empty check list is never green.
+
+For an isolated Linux/WSL build, from this fork's checkout:
+
+```sh
+mkdir -p "$HOME/.local/bin" "$HOME/.no-mistakes-fam"
+go build -o "$HOME/.local/bin/no-mistakes-fam" ./cmd/no-mistakes
+cp -n profiles/famlopezmuralles.yaml "$HOME/.no-mistakes-fam/config.yaml"
+NM_HOME="$HOME/.no-mistakes-fam" "$HOME/.local/bin/no-mistakes-fam" doctor
+```
+
+The copy preserves an existing isolated config. Do not replace the installed
+binary/config or reinitialize a checkout while another installation owns active
+runs. For a new checkout, `init --skip-user-skill` avoids replacing the existing
+user-level agent skill. Build from this fork for these options; the upstream
+one-line installer below installs upstream.
+
+The preset includes explicit additional checks for this fork and Centinela.
+Its Centinela commands use the owner's WSL Python environment at
+`/home/lopezc/centinela/env-centinela/bin/python`; adjust that personal path on
+another host. These additions never replace trusted repository commands. Other
+repositories must configure their own real Test/Lint commands; fast mode refuses
+to invent them. See the [global config reference](docs/src/content/docs/reference/global-config.md#fast_mode)
+for policy and recovery details.
+
+
 ## How it works
 
 ```

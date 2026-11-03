@@ -9,6 +9,7 @@ Global configuration lives at `~/.no-mistakes/config.yaml`. Set `NM_HOME` to rel
 # ~/.no-mistakes/config.yaml
 
 agent: auto
+fast_mode: false
 
 acpx_path: acpx
 
@@ -83,6 +84,7 @@ auto_fix:
   ci: 3
 
 ci:
+  no_checks_timeout: 0
   rerun_transient: 0
   revalidate_repairs: false
   review_bot_comments: on_failure # or: always
@@ -142,6 +144,38 @@ providers:
 ```
 
 ## Fields
+
+### fast_mode
+
+Opt-in, **machine-global-only** deterministic validation policy. Default: `false`.
+Repository config and repository overrides cannot enable it.
+
+With `fast_mode: true`, **new runs** durably skip Review and Document, preserving
+explicit operator skips. Intent, Rebase, Test, Lint, Push, PR, and CI remain in
+the pipeline. Test and Lint execute their configured commands without AI review,
+fixing, documentation, or lint-discovery passes. Missing commands block rather
+than silently passing or falling back to an agent. PR drafting may still use an
+agent; this is not an entirely agent-free pipeline.
+
+All automatic repair budgets, including custom gates, resolve to zero regardless
+of repository overrides. Manual `fix` responses are also refused. `--yes` stops
+at a fast-mode gate instead of fixing or approving it. Failed or inconclusive
+validation cannot be approved as clean evidence: abort, repair outside the run,
+and submit a new run, or explicitly skip to record missing evidence.
+
+Fast publication uses the run's persisted policy, not a claimed review approval.
+Push requires a clean checkout at the exact recorded head and completed
+configured Test/Lint command evidence bound to that same head. A later commit,
+missing evidence, or changed command configuration requires validation again.
+Explicit operator skips remain recorded as missing evidence, and any recorded
+Test approval exception remains an exception rather than a clean check.
+Neither command-only validation nor publication claims an AI review or live
+product validation; normal custody, remote-verification, and push-lease guards
+still apply.
+
+The admission decision is stored with the run. Changing this setting does not
+convert an already active run, and restarting the daemon preserves the original
+policy and skipped steps. Ordinary runs retain their existing behavior.
 
 ### agent
 
@@ -1027,6 +1061,18 @@ For empty `commands.lint`, the document step's combined housekeeping pass also a
 Legacy alias: `auto_fix.babysit`.
 
 These are global defaults. Per-repo config can override individual steps.
+[`fast_mode`](#fast_mode) overrides all of these budgets to zero and additionally
+refuses manual AI repair; setting budgets to zero alone does not disable manual fixes.
+
+
+### ci.no_checks_timeout
+
+Machine-level fallback for
+[`ci.no_checks_timeout`](/no-mistakes/reference/repo-config/#cino_checks_timeout).
+A nonnegative duration such as `90s` bounds how long CI may wait for its first
+checks to register. Default `0` preserves the unlimited registration wait.
+A trusted repository value overrides this fallback, including an explicit `0`.
+Expiry reports missing check evidence; it never turns an empty check list green.
 
 ### ci.rerun_transient
 

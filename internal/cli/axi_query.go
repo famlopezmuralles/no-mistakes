@@ -100,9 +100,9 @@ func runAxiStatus(cmd *cobra.Command, runID string) error {
 		// command for an explicit selection is `axi respond --run <id>`.
 		branchScopedCommandsSafe := runID == ""
 		if !branchScopedCommandsSafe {
-			fields = append(fields, inspectionOnlyGateFields(gate, run.ID)...)
+			fields = append(fields, rv.gateFields(gate, run.ID, true)...)
 		} else {
-			fields = append(fields, gateFields(gate)...)
+			fields = append(fields, rv.gateFields(gate, "", false)...)
 		}
 	} else if terminalStatus(rv.Status) {
 		fields = append(fields, toon.Field{Key: "outcome", Value: outcomeForRun(rv)})

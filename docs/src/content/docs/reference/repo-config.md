@@ -87,6 +87,7 @@ auto_fix:
 # Read only from the trusted default branch: each rerun is another workflow run,
 # and revalidation decides whether a CI repair may ship without review.
 ci:
+  no_checks_timeout: 0
   rerun_transient: 0
   revalidate_repairs: false
   review_bot_comments: on_failure # or: always
@@ -206,7 +207,7 @@ Declare that this repository intentionally has no CI.
 
 When `true` and the forge reports **zero** checks on the PR head, the CI monitor treats that empty result as all-checks-passed and `axi run` may return `outcome: checks-passed`. The monitor log names the declaration (`no_ci: true`) so the positive evidence stays inspectable rather than silently equating every empty forge response with green.
 
-Absence of this field means CI is expected. A zero-length check result then stays not-ready for as long as the forge reports no checks - elapsed time, grace periods, workflow-file presence or absence, prior check history, and branch names are not evidence.
+Absence of this field means CI is expected. A zero-length check result then stays not-ready; elapsed time, grace periods, workflow-file presence or absence, prior check history, and branch names are not evidence. [`ci.no_checks_timeout`](#cino_checks_timeout) can bound the registration wait, but its expiry reports missing evidence rather than readiness.
 
 If checks still appear on a declared no-CI repository, their actual states are processed normally. The declaration never waives a registered pending or failing check.
 
@@ -708,6 +709,10 @@ This is a staging guard, not an agent filesystem sandbox or a check on semantic 
 ### auto_fix
 
 Override auto-fix attempt limits for specific steps. Core-step fields not set here inherit from global config. Gate budgets are repository-only and default to `0`.
+Machine-global [`fast_mode`](/no-mistakes/reference/global-config/#fast_mode)
+overrides every repair budget to zero and refuses manual AI repair; a repository
+cannot enable or disable that policy.
+
 
 | | |
 |---|---|
@@ -743,6 +748,23 @@ This budget is honored only from the trusted default-branch config, even with `a
 With a positive budget, a gate with at least one `auto-fix` finding and no `ask-user` findings uses the shared fix loop. The fixer receives the findings and decision history, commits repairs like Test, and re-runs the gate. It parks when the budget is exhausted or a repair returns as many or more findings than the round it answered. Changing finding IDs without reducing the count is not progress. Manual fix, approve, and skip responses remain unchanged. This budget does not require non-waivable command success under unattended AXI.
 
 Legacy alias: `auto_fix.babysit`.
+
+### ci.no_checks_timeout
+
+Optional nonnegative duration bounding the wait for CI checks to register on the
+PR head, for example `90s`. An omitted value inherits global
+`ci.no_checks_timeout`; `0` disables the registration deadline and preserves the
+existing unlimited wait. Invalid or negative durations are rejected.
+
+When this deadline expires without registered checks, CI reports missing check
+evidence and stays blocked; it never declares the PR ready. This is separate from
+`ci_timeout`, which governs CI settling and green-PR monitoring. A trusted
+`no_ci: true` declaration still permits an empty check list.
+
+This setting is read only from the **trusted default branch**, regardless of
+`allow_repo_commands`. Pushed branches cannot weaken or shorten their own
+registration policy. A trusted value overrides the machine-global fallback,
+including an explicit `0`.
 
 ### ci.rerun_transient
 

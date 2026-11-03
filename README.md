@@ -68,6 +68,10 @@ claim successful live-product validation. Explicitly skipped checks remain
 visible omissions. CI jobs that have registered retain their normal execution
 budget; an empty check list is never green.
 
+The inherited attestation workflow's owner exemption follows
+`github.repository_owner`, rather than the upstream author's account. It reports
+an owner exemption, not a compliant AI pipeline; the real Go/test CI still runs.
+
 For an isolated Linux/WSL build, from this fork's checkout:
 
 ```sh

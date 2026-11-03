@@ -280,6 +280,9 @@ func (m *RunManager) loadRecoveredConfig(ctx context.Context, run *db.Run, repo 
 	if err != nil {
 		return nil, fmt.Errorf("load global config: %w", err)
 	}
+	// Admission pins this separately so loading a newly selected profile cannot
+	// change the policy of an already active run.
+	globalCfg.FastMode = run.FastMode
 	repoCfg, err := config.LoadRepo(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("load repo config: %w", err)
@@ -1736,6 +1739,13 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		trackStartFailure("create_run")
 		return "", fmt.Errorf("create run: %w", err)
 	}
+	if globalCfgErr == nil && globalCfg.FastMode {
+		if err := m.db.SetRunFastMode(run.ID); err != nil {
+			m.db.UpdateRunError(run.ID, err.Error())
+			return "", err
+		}
+		run.FastMode = true
+	}
 	if intentCheckJSON != "" {
 		if err := m.db.SetRunIntentCheck(run.ID, intentCheckJSON); err != nil {
 			m.db.UpdateRunError(run.ID, fmt.Sprintf("pin intent check: %s", err))
@@ -1885,6 +1895,7 @@ func (m *RunManager) startRunWithIntentSourceLocked(ctx context.Context, repo *d
 		slog.Info("repo commands/agent loaded from default branch, not pushed branch", "run_id", run.ID, "branch", branch, "default_branch", repo.DefaultBranch)
 	}
 	cfg := config.MergeForRemote(globalCfg, effectiveRepoCfg, repo.UpstreamURL)
+	skipSteps = fastModeSkips(skipSteps, cfg.FastMode)
 	if run.IntentCheckJSON == nil {
 		policy, err := json.Marshal(cfg.Intent.Check)
 		if err != nil {

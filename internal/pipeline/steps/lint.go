@@ -16,6 +16,9 @@ type LintStep struct{}
 func (s *LintStep) Name() types.StepName { return types.StepLint }
 
 func (s *LintStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	if sctx.Config.FastMode {
+		return runFastChecks(sctx, s.Name())
+	}
 	outcome, err := s.executeRepositoryLint(sctx)
 	if err != nil || len(sctx.Config.CommandOverrides["lint"].Additional) == 0 {
 		return outcome, err

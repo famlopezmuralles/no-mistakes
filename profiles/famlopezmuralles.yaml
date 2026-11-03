@@ -1,0 +1,38 @@
+# Personal fast policy for this fork. Copy only into a separate NM_HOME;
+# do not replace an installation that still owns active runs.
+fast_mode: true
+
+# Only PR drafting may use this agent. Validation uses configured commands.
+agent: pi
+agent_config:
+  pi:
+    model: deepseek/deepseek-flash
+    effort: low
+
+ci:
+  # Missing checks are unverified, not green. Running checks keep their normal
+  # execution budget once registered.
+  no_checks_timeout: "60s"
+  # Finish when real checks pass instead of monitoring until the human merges.
+  release_after_checks_pass: true
+
+# Set commands.test and commands.lint in each repository's trusted config (or
+# use explicit machine-local additional checks). Missing commands block the run;
+# there is no AI discovery fallback. Fast mode also disables repair budgets,
+# skips Review and Document, and never substitutes a local pass for CI.
+
+# Operator-owned additions; they never replace a repository's trusted checks.
+repository_overrides:
+  https://github.com/famlopezmuralles/no-mistakes:
+    commands:
+      test:
+        additional:
+          - "go test ./internal/config ./internal/db ./internal/daemon ./internal/pipeline ./internal/cli ./internal/pipeline/steps ./internal/pipeline/steps/citest"
+  https://github.com/famlopezmuralles/Centinela:
+    commands:
+      test:
+        additional:
+          - 'PYTHONPATH="$PWD:$PWD/src" /home/lopezc/centinela/env-centinela/bin/python -m pytest -o addopts= -p no:cacheprovider tests/core tests/strategy_factory/test_code_fingerprint.py tests/strategy_factory/test_e4_execution.py -x -q --no-header --no-cov'
+      lint:
+        additional:
+          - "/home/lopezc/centinela/env-centinela/bin/python -m compileall -q dags"

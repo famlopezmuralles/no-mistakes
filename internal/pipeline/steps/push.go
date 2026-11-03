@@ -84,9 +84,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 	if err != nil {
 		return nil, fmt.Errorf("resolve head before push: %w", err)
 	}
-	// This run's own review/test/document have already completed by now (see
-	// AllSteps' fixed order), so these are honest statuses to attest for the
-	// head about to be pushed - see attestHeadBeforePush.
+	// Earlier validation steps have settled by now, including recorded operator
+	// and fast-policy skips. Attest their actual statuses for this exact head;
+	// skipped Review or Document must never be reported as completed.
 	attestationSteps, err := sctx.DB.GetStepsByRun(sctx.Run.ID)
 	if err != nil {
 		return nil, fmt.Errorf("load step results for attestation: %w", err)
@@ -117,9 +117,9 @@ func (s *PushStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, e
 // Publication becomes durable only after the remote and gate mirror settle;
 // the push binding and recorded head then land in one database update.
 //
-// It deliberately does not relax the review-approved-head check for anyone.
-// Whether a CI repair may be published at all is decided before publication, by
-// ciRepairContinuityGap.
+// Ordinary runs retain review-approved-head continuity. An explicitly pinned
+// fast run instead requires exact-head configured Test/Lint evidence at this
+// same publication boundary; neither policy bypasses custody or lease checks.
 //
 // attestationSteps is forwarded to attestHeadBeforePush, which writes this
 // run's pipeline attestation for headBeingPushed BEFORE it is pushed - see
@@ -364,14 +364,16 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 	return nil
 }
 
-// assertReviewApprovedPushHead refuses to publish a head that is not the
-// durably review-approved commit or a descendant of it. There is no exception:
-// a head that cannot show that ancestry has not been reviewed, and the CI
-// repair path answers that case by revalidating instead of publishing.
+// assertReviewApprovedPushHead enforces the run's durable publication policy:
+// review ancestry for ordinary runs, exact-head configured validation for fast
+// runs. Fast validation never creates or claims review approval.
 func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead string) error {
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		return fmt.Errorf("load durable review approval before push: %w", err)
+	}
+	if run != nil && run.FastMode {
+		return assertFastValidationPushHead(sctx, run, proposedHead)
 	}
 	approvedHead, reason := reviewApprovedHead(sctx, run)
 	if approvedHead == "" {
@@ -403,6 +405,87 @@ func reviewApprovedHead(sctx *pipeline.StepContext, run *db.Run) (string, string
 		return "", "durable review-approved head is unreachable"
 	}
 	return approvedHead, ""
+}
+
+func assertFastValidationPushHead(sctx *pipeline.StepContext, run *db.Run, proposedHead string) error {
+	if !isFullGitObjectID(proposedHead) || proposedHead != run.HeadSHA || proposedHead != sctx.Run.HeadSHA {
+		return fmt.Errorf("refusing fast-mode push: proposed head must equal the exact durably recorded current head")
+	}
+	head, err := stepGitRun(sctx, "rev-parse", "--verify", "HEAD")
+	if err != nil || strings.TrimSpace(head) != proposedHead {
+		return fmt.Errorf("refusing fast-mode push: checkout HEAD does not match the validated current head")
+	}
+	status, err := stepGitRun(sctx, "status", "--porcelain", "--untracked-files=normal")
+	if err != nil {
+		return fmt.Errorf("inspect fast-mode push checkout: %w", err)
+	}
+	if strings.TrimSpace(status) != "" {
+		return fmt.Errorf("refusing fast-mode push: checkout changed after configured validation")
+	}
+	results, err := sctx.DB.GetStepsByRun(run.ID)
+	if err != nil {
+		return fmt.Errorf("load fast-mode publication evidence: %w", err)
+	}
+	for _, name := range []types.StepName{types.StepTest, types.StepLint} {
+		var result *db.StepResult
+		for _, candidate := range results {
+			if candidate.StepName == name {
+				if result != nil {
+					return fmt.Errorf("refusing fast-mode push: duplicate %s evidence", name)
+				}
+				result = candidate
+			}
+		}
+		if result == nil {
+			return fmt.Errorf("refusing fast-mode push: configured %s evidence is missing", name)
+		}
+		if result.Status == types.StepStatusSkipped {
+			if result.SkipReason != nil && strings.TrimSpace(*result.SkipReason) != "" {
+				return fmt.Errorf("refusing fast-mode push: automatic %s skip is not an explicit operator exception", name)
+			}
+			sctx.Log(fmt.Sprintf("fast-mode publication exception: %s was explicitly skipped; no %s check evidence is claimed for %s", name, name, proposedHead))
+			continue
+		}
+		if result.Status != types.StepStatusCompleted || result.FindingsJSON == nil || result.ExitCode == nil {
+			return fmt.Errorf("refusing fast-mode push: configured %s did not complete with recorded evidence", name)
+		}
+		findings, err := types.ParseFindingsJSON(*result.FindingsJSON)
+		if err != nil || findings.TestedHeadSHA != proposedHead {
+			return fmt.Errorf("refusing fast-mode push: configured %s evidence is not bound to current head %s", name, shortObjectID(proposedHead))
+		}
+		command := sctx.Config.Commands.Test
+		if name == types.StepLint {
+			command = sctx.Config.Commands.Lint
+		}
+		command = strings.TrimSpace(command)
+		additional := sctx.Config.CommandOverrides[string(name)].Additional
+		offset := 0
+		if command != "" {
+			offset = 1
+		}
+		if len(findings.Tested) == 0 || len(findings.Tested) != offset+len(additional) || offset == 1 && findings.Tested[0] != command {
+			return fmt.Errorf("refusing fast-mode push: recorded %s commands do not match configured checks", name)
+		}
+		for i, check := range additional {
+			if findings.Tested[offset+i] != check {
+				return fmt.Errorf("refusing fast-mode push: recorded %s commands do not match configured additional checks", name)
+			}
+		}
+		if reason := result.TestOverrideReason(); reason != "" && (result.ApprovalReason != nil || result.OverrideReason != nil && strings.TrimSpace(*result.OverrideReason) != "") {
+			sctx.Log(fmt.Sprintf("fast-mode publication exception: %s", reason))
+			continue
+		}
+		if *result.ExitCode != 0 || types.HasAskUserFindings(findings) {
+			return fmt.Errorf("refusing fast-mode push: configured %s did not pass", name)
+		}
+		for _, finding := range findings.Items {
+			if finding.Severity == types.FindingSeverityError || finding.Severity == types.FindingSeverityWarning {
+				return fmt.Errorf("refusing fast-mode push: configured %s has unresolved findings", name)
+			}
+		}
+	}
+	sctx.Log("fast-mode publication authorized by exact-head configured checks and recorded exceptions only; Review was not performed")
+	return nil
 }
 
 func isFullGitObjectID(value string) bool {

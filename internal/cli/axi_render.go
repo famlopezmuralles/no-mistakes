@@ -115,6 +115,7 @@ type stepView struct {
 
 // runView is a render-ready view of a pipeline run.
 type runView struct {
+	FastMode         bool
 	PiProfile        *agentcfg.PiProfile
 	VerificationPlan *verificationplan.Snapshot
 	// QuotaRouting is the run's parsed quota-aware ordering record, nil when
@@ -154,6 +155,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 		CIOverrideReason:   r.CIOverrideReason,
 		TestOverrideReason: r.TestOverrideReason,
 		PiProfile:          r.PiProfile,
+		FastMode:           r.FastMode,
 		VerificationPlan:   r.VerificationPlan,
 		RetryOf:            r.RetryOf,
 		RetriedBy:          r.RetriedBy,
@@ -200,6 +202,7 @@ func runViewFromIPC(r *ipc.RunInfo) runView {
 func runViewFromDB(r *db.Run, steps []*db.StepResult, database *db.DB) runView {
 	rv := runView{
 		PiProfile:          r.PiProfile,
+		FastMode:           r.FastMode,
 		VerificationPlan:   r.VerificationPlan,
 		ID:                 r.ID,
 		Branch:             r.Branch,
@@ -535,6 +538,9 @@ func runObjectFieldWithKey(key string, rv runView) toon.Field {
 			toon.Field{Key: "effort", Value: string(rv.PiProfile.Effort)},
 		)})
 	}
+	if rv.FastMode {
+		fields = append(fields, toon.Field{Key: "fast_mode", Value: true})
+	}
 	if rv.QuotaRouting != nil {
 		fields = append(fields, quotaRoutingField(rv.QuotaRouting))
 	}
@@ -647,6 +653,28 @@ func (rv runView) automaticSkips() []automaticSkipRow {
 		}
 	}
 	return rows
+}
+
+func (rv runView) gateFields(gate stepView, runID string, inspectionOnly bool) []toon.Field {
+	if !rv.FastMode {
+		if inspectionOnly {
+			return inspectionOnlyGateFields(gate, runID)
+		}
+		return gateFieldsForRun(gate, runID)
+	}
+	help := []string{
+		"Fast mode does not run AI repairs or approve failed required checks. The recorded failure remains blocked.",
+		fmt.Sprintf("Run `%s` to inspect the check output", axiLogsFullCommand(gate.Name, runID)),
+	}
+	if inspectionOnly {
+		help = append(help, "This explicitly selected fast-mode gate is inspection-only here.")
+	} else {
+		help = append(help, "Run `no-mistakes axi abort"+runFlag(runID)+"` when you intend to discard this run; follow any offered branch_sync recovery, fix and commit locally, then start a new validation run")
+		if !pipeline.HasProtectedPathRefusal(gate.FindingsJSON) && !pipeline.HasUnvalidatedWorkRefusal(gate.FindingsJSON) {
+			help = append(help, "Only if you deliberately waive this check, run `no-mistakes axi respond"+runFlag(runID)+" --action skip`; the omission remains recorded, not a passing check")
+		}
+	}
+	return gateFieldsWithHelp(gate, help)
 }
 
 // gateFields renders the active approval gate: the awaiting step, its findings

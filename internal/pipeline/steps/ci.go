@@ -521,6 +521,12 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	// to now() whenever the base branch advances, while started stays fixed so
 	// poll-interval and grace-period pacing are unaffected by re-arming.
 	timeoutAnchor := started
+	// Registration is bounded independently of the idle timeout: base movement
+	// must not extend the wait for checks, and registered jobs may run longer.
+	noChecksTimeout := sctx.Config.CI.NoChecksTimeout
+	registrationAnchor := started
+	registrationHead := sctx.Run.HeadSHA
+	checksRegistered := false
 	lastBaseTip := ""
 	// behindBaseTip is the base tip a green, BEHIND PR was last seen at. The
 	// rebase repair fires only when the next poll still sees it green and
@@ -573,6 +579,15 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		}
 		if !unlimited {
 			remaining := timeout - now().Sub(timeoutAnchor)
+			if remaining < interval {
+				interval = remaining
+			}
+		}
+		if noChecksTimeout > 0 && !sctx.Config.NoCI && !checksRegistered {
+			remaining := noChecksTimeout - now().Sub(registrationAnchor)
+			if remaining < 0 {
+				remaining = 0
+			}
 			if remaining < interval {
 				interval = remaining
 			}
@@ -703,6 +718,41 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 		if observedHead != "" && observedHead != lastCheckHeadSHA {
 			timeoutFailingChecks = nil
 			lastCheckHeadSHA = observedHead
+		}
+		publishedHead := observedHead
+		if publishedHead == "" && err == nil {
+			publishedHead = sctx.Run.HeadSHA
+		}
+		if publishedHead != "" && publishedHead != registrationHead {
+			registrationHead = publishedHead
+			registrationAnchor = now()
+			checksRegistered = false
+		}
+		// Required-review and pipeline-registration gates are not evidence
+		// that CI jobs registered.
+		if err == nil {
+			for _, check := range checks {
+				if check.ExternalReview == "" && check.ProviderID != "gitlab:pipeline-registration" {
+					checksRegistered = true
+					break
+				}
+			}
+		}
+		if noChecksTimeout > 0 && !sctx.Config.NoCI && !checksRegistered && !pluginPollFailsStep(err) && now().Sub(registrationAnchor) >= noChecksTimeout {
+			if err := clearCIMonitorReady(sctx); err != nil {
+				return nil, err
+			}
+			findings := Findings{
+				Summary: "No CI checks registered before the registration deadline; readiness is unverified",
+				Items: []Finding{{
+					ID:          "ci-no-checks-timeout",
+					Severity:    "warning",
+					Description: fmt.Sprintf("No CI checks registered for published head %s within %s. CI readiness is unverified; check workflow triggers and provider configuration before proceeding.", registrationHead, noChecksTimeout),
+					Action:      types.ActionAskUser,
+				}},
+			}
+			sctx.Log(findings.Summary)
+			return ciTerminalRepairOutcome(ciObservationOutcome(findings), Findings{}, sctx.DeferredFindings), nil
 		}
 		if err == nil {
 			checks, err = requiredReviewChecks(sctx, host, pr, checks)

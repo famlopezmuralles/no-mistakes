@@ -322,6 +322,13 @@ func (e *Executor) RespondWithOverrides(step types.StepName, action types.Approv
 		e.mu.Unlock()
 		return RespondDispositions{}, fmt.Errorf("step mismatch: responding to %q but %q is awaiting approval", step, e.waitingStep)
 	}
+	if action == types.ActionFix && e.config != nil && e.config.FastMode {
+		e.mu.Unlock()
+		return RespondDispositions{}, &RespondRefusal{
+			Message: "fast_mode disables AI repair; this gate remains blocked",
+			Help:    "Abort this run, fix the failing check outside the pipeline, then start a new run; or explicitly skip the step to record missing evidence.",
+		}
+	}
 	var coverageRound *db.StepRound
 	if action == types.ActionCompleteCoverage {
 		if err := validateCoverageResponse(step, e.waitingFindings, findingIDs, ignoreFindingIDs, instructions, addedFindings); err != nil {
@@ -856,7 +863,7 @@ func (e *Executor) Resume(ctx context.Context, run *db.Run, repo *db.Repo, workD
 	e.mu.Lock()
 	e.waiting = true
 	e.waitingStep = gate.step.Name()
-	e.waitingApprovalRefusal = approvalRefusal(gate.step.Name(), gate.findings)
+	e.waitingApprovalRefusal = e.gateApprovalRefusal(gate.step.Name(), gate.findings)
 	e.waitingApprovalVerify = e.approvalVerifier(gate.step, reconcileCtx)
 	e.waitingFindings = gate.findings
 	e.waitingStepResultID = gate.stepResult.ID
@@ -1236,11 +1243,32 @@ func (e *Executor) autoFixLimit(stepName types.StepName) int {
 	return e.config.AutoFixLimit(stepName)
 }
 
+// Fast validation never converts a failed or inconclusive check into approval,
+// including when an unattended driver would otherwise approve a no-op gate.
+func (e *Executor) gateApprovalRefusal(step types.StepName, findings string) string {
+	if refusal := approvalRefusal(step, findings); refusal != "" {
+		return refusal
+	}
+	if e.config != nil && e.config.FastMode {
+		switch step {
+		case types.StepTest, types.StepLint, types.StepCI, types.StepRebase:
+			return fmt.Sprintf("cannot approve %s in fast_mode: required check evidence is unresolved; abort and fix outside the pipeline, or explicitly skip to record missing evidence", step)
+		}
+		if hasBlockingFindingsJSON(findings) || hasAskUserFindingsJSON(findings) {
+			return fmt.Sprintf("cannot approve blocking %s findings in fast_mode; abort and fix outside the pipeline", step)
+		}
+	}
+	return ""
+}
+
 // executeStep runs a single step with approval coordination.
 // Returns whether to skip the remainder, an optional earlier restart step,
 // and any execution error.
 func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult, run *db.Run, repo *db.Repo, workDir, logDir string, state stepExecutionState) (bool, types.StepName, error) {
 	stepName := step.Name()
+	if state.fixing && e.config != nil && e.config.FastMode {
+		return false, "", fmt.Errorf("fast_mode disables AI repair for %s", stepName)
+	}
 	logPath := filepath.Join(logDir, string(stepName)+".log")
 	finalExitCode := 0
 	autoFixLimit := e.autoFixLimit(stepName)
@@ -1791,7 +1819,7 @@ rounds:
 			e.mu.Lock()
 			e.waiting = true
 			e.waitingStep = stepName
-			e.waitingApprovalRefusal = approvalRefusal(stepName, effectiveFindings)
+			e.waitingApprovalRefusal = e.gateApprovalRefusal(stepName, effectiveFindings)
 			e.waitingApprovalVerify = e.approvalVerifier(step, sctx)
 			e.waitingFindings = effectiveFindings
 			e.waitingStepResultID = sr.ID

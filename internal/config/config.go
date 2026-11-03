@@ -178,7 +178,9 @@ const (
 
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
-	SourceYAML           []byte              `yaml:"-"`
+	SourceYAML []byte `yaml:"-"`
+	// FastMode is an operator-only deterministic validation policy for new runs.
+	FastMode             bool                `yaml:"fast_mode"`
 	Agent                types.AgentName     `yaml:"agent"`
 	Agents               []types.AgentName   `yaml:"-"`
 	ACPXPath             string              `yaml:"acpx_path"`
@@ -294,6 +296,7 @@ type GlobalConfig struct {
 
 // globalConfigRaw is the on-disk YAML representation with duration as string.
 type globalConfigRaw struct {
+	FastMode                  bool                       `yaml:"fast_mode"`
 	Agent                     agentList                  `yaml:"agent"`
 	ACPXPath                  string                     `yaml:"acpx_path"`
 	ForgejoAXIPath            string                     `yaml:"forgejo_axi_path"`
@@ -775,6 +778,7 @@ type AutoFixRaw struct {
 // CIRaw is the YAML representation of CI-step settings.
 // Pointer fields distinguish "not set" (nil) from "set to 0" (disabled).
 type CIRaw struct {
+	NoChecksTimeout     *string  `yaml:"no_checks_timeout"`
 	RequiredReviews     []string `yaml:"required_reviews"`
 	RequiredReviewAppID *int64   `yaml:"required_review_app_id"`
 	RequiredReviewBotID *string  `yaml:"required_review_bot_id"`
@@ -797,6 +801,8 @@ type CIRaw struct {
 
 // CI holds the resolved CI-step settings.
 type CI struct {
+	// NoChecksTimeout bounds check registration; zero waits without a deadline.
+	NoChecksTimeout time.Duration
 	// RequiredReviews names external reviewers whose completion gates readiness.
 	RequiredReviews []string
 	// RequiredReviewAppID pins the host-local CodeRabbit GitHub App identity (GHES only).
@@ -937,6 +943,7 @@ type AutoFix struct {
 
 // Config is the merged result of global + per-repo configuration.
 type Config struct {
+	FastMode              bool
 	ReplayGlobalYAML      []byte
 	ReplayRepoYAML        []byte
 	TrustedConfigSHA      string
@@ -2819,6 +2826,7 @@ func LoadGlobalFromBytes(data []byte) (*GlobalConfig, error) {
 	}
 	warnRetiredJev(raw.Jev)
 
+	cfg.FastMode = raw.FastMode
 	if len(raw.Agent) > 0 {
 		cfg.Agents = copyAgents(raw.Agent)
 		cfg.Agent = firstAgent(cfg.Agents)
@@ -3989,6 +3997,10 @@ func validateRebaseRaw(r RebaseRaw) error {
 // inverting the bound, and anything above MaxCIRerunTransient is capped so a
 // typo cannot keep a run polling one commit indefinitely.
 func applyCIOverrides(dst *CI, src *CIRaw) {
+	if src.NoChecksTimeout != nil {
+		// Config loading already validated this duration.
+		dst.NoChecksTimeout, _ = time.ParseDuration(*src.NoChecksTimeout)
+	}
 	if src.RequiredReviews != nil {
 		dst.RequiredReviews = append([]string{}, src.RequiredReviews...)
 	}
@@ -4028,6 +4040,12 @@ func applyCIOverrides(dst *CI, src *CIRaw) {
 // ("allways") quietly keep reporting green over comments a maintainer asked
 // to see.
 func validateCIRaw(c CIRaw) error {
+	if c.NoChecksTimeout != nil {
+		d, err := time.ParseDuration(*c.NoChecksTimeout)
+		if err != nil || d < 0 {
+			return fmt.Errorf("ci.no_checks_timeout must be a nonnegative duration, got %q", *c.NoChecksTimeout)
+		}
+	}
 	switch strings.TrimSpace(c.ReviewBotComments) {
 	case "", CIReviewBotCommentsOnFailure, CIReviewBotCommentsAlways:
 		return nil
@@ -4060,6 +4078,9 @@ func applyAutoFixOverrides(dst *AutoFix, src *AutoFixRaw) {
 // AutoFixLimit returns the max auto-fix attempts for a given step.
 // Steps without auto-fix support return 0.
 func (c *Config) AutoFixLimit(step types.StepName) int {
+	if c.FastMode {
+		return 0
+	}
 	if step.IsCustomGate() {
 		return c.AutoFix.Gates[step.CustomGateLabel()]
 	}
@@ -4117,6 +4138,9 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	applyAutoFixOverrides(&af, &repo.AutoFix)
 	// Gate budgets are repository-only, unlike the core step budgets.
 	af.Gates = maps.Clone(repo.AutoFix.Gates)
+	if global.FastMode {
+		af = AutoFix{}
+	}
 
 	ci := ciDefaults()
 	// The operator's global value is a machine-wide floor they can always set;
@@ -4227,6 +4251,7 @@ func merge(global *GlobalConfig, repo *RepoConfig, override *RepositoryOverride)
 	}
 
 	cfg := &Config{
+		FastMode:                  global.FastMode,
 		Agent:                     global.Agent,
 		Agents:                    copyAgents(global.Agents),
 		ACPXPath:                  global.ACPXPath,

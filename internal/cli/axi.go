@@ -233,7 +233,7 @@ func runAxiHome(cmd *cobra.Command) error {
 			gated = true
 			gatedOnAnswers = pipeline.HasUnansweredReviewQuestion(gate.FindingsJSON)
 			gatedOnCoverage = pipeline.CanContinueReviewCoverage(types.StepName(gate.Name), gate.FindingsJSON)
-			fields = append(fields, gateFields(gate)...)
+			fields = append(fields, rv.gateFields(gate, "", false)...)
 		}
 	} else if otherActive != nil {
 		steps, _ := env.d.GetStepsByRun(otherActive.ID)
@@ -258,6 +258,8 @@ func runAxiHome(cmd *cobra.Command) error {
 		if otherActive != nil {
 			help = append(help, fmt.Sprintf("Another active run is on %s; leave it alone unless you are working on that branch", otherActive.Branch))
 		}
+	case gated && currentActive.FastMode:
+		help = append(help, "This fast-mode gate remains blocked; inspect `no-mistakes axi status` for check evidence and the permitted recovery or explicit-skip choices")
 	case gatedOnAnswers:
 		// A review parked on its reviewer's own questions wants an answer, not
 		// a verdict: approving would discard the pass it paused.

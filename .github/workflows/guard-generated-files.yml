@@ -69,9 +69,7 @@ jobs:
                  git merge-base --is-ancestor "$release_sha" "$HEAD_SHA"; then
                 unchanged=true
                 for path in $violated; do
-                  expected=$(git rev-parse --verify "$release_sha:$path")
-                  proposed=$(git rev-parse --verify "$HEAD_SHA:$path" 2>/dev/null) || proposed=""
-                  if [ "$expected" != "$proposed" ]; then
+                  if ! git diff --quiet "$release_sha" "$HEAD_SHA" -- "$path"; then
                     unchanged=false
                   fi
                 done

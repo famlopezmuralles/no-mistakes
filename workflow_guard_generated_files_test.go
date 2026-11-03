@@ -56,6 +56,15 @@ func TestGuardGeneratedFilesWorkflow(t *testing.T) {
 			},
 		},
 		{
+			name: "changed-generated-mode",
+			prepare: func(f *syncReleaseFixture, base string) string {
+				mergeGeneratedGuardRelease(f)
+				f.git(f.repo, "update-index", "--chmod=+x", "CHANGELOG.md")
+				f.git(f.repo, "commit", "-m", "alter generated artifact mode")
+				return base
+			},
+		},
+		{
 			name: "hand-edited-release-import",
 			prepare: func(f *syncReleaseFixture, base string) string {
 				mergeGeneratedGuardRelease(f)

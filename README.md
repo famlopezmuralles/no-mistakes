@@ -95,6 +95,12 @@ repositories must configure their own real Test/Lint commands; fast mode refuses
 to invent them. See the [global config reference](docs/src/content/docs/reference/global-config.md#fast_mode)
 for policy and recovery details.
 
+For maintained use of this fork, follow the
+[land-the-plane runbook](PR-MERGE-RUNBOOK.md): refresh the latest stable upstream
+source before each addition and before landing, merge through a reviewed PR,
+then deploy the fork with verified backups, active-run protection and rollback.
+Do not use the upstream self-updater to update the personal fork.
+
 
 ## How it works
 

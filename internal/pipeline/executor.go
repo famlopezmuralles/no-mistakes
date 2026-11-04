@@ -1251,7 +1251,7 @@ func (e *Executor) gateApprovalRefusal(step types.StepName, findings string) str
 	}
 	if e.config != nil && e.config.FastMode {
 		switch step {
-		case types.StepTest, types.StepLint, types.StepCI, types.StepRebase:
+		case types.StepReview, types.StepTest, types.StepLint, types.StepCI, types.StepRebase:
 			return fmt.Sprintf("cannot approve %s in fast_mode: required check evidence is unresolved; abort and fix outside the pipeline, or explicitly skip to record missing evidence", step)
 		}
 		if hasBlockingFindingsJSON(findings) || hasAskUserFindingsJSON(findings) {

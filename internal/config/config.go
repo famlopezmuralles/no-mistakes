@@ -179,7 +179,7 @@ const (
 // GlobalConfig represents ~/.no-mistakes/config.yaml.
 type GlobalConfig struct {
 	SourceYAML []byte `yaml:"-"`
-	// FastMode is an operator-only deterministic validation policy for new runs.
+	// FastMode is an operator-only lean review and configured-check policy.
 	FastMode             bool                `yaml:"fast_mode"`
 	Agent                types.AgentName     `yaml:"agent"`
 	Agents               []types.AgentName   `yaml:"-"`

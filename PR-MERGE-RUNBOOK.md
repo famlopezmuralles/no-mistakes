@@ -58,9 +58,9 @@ sync branch and PR through the same gates. No unattended direct merge into main.
 - Run the smallest real checks covering the change. For the release helper and
   import guard: `go test . -run 'TestSyncUpstreamRelease|TestGuardGeneratedFilesWorkflow' -count=1`.
 - Exercise the changed command or installation path, not just its tests.
-- Use the personal fast policy only with explicit real Test/Lint commands. All
-  applicable remote CI must pass; missing checks are not green. Docs deployment
-  intentionally skipped on a PR is not a failed build.
+- Use the personal fast policy with a real independent Review and explicit
+  Test/Lint commands. All applicable remote CI must pass; missing checks are not
+  green. Docs deployment intentionally skipped on a PR is not a failed build.
 - Inspect live PR details/reviews and checks with `gh-axi pr view <PR> -R
   famlopezmuralles/no-mistakes --reviews` and `gh-axi pr checks <PR> -R
   famlopezmuralles/no-mistakes`.
@@ -172,9 +172,10 @@ when no agent process is doing work.
 Only after section 5's successful guarded stop:
 
 1. Merge the approved keys from `profiles/famlopezmuralles.yaml` into the existing
-   global config, preserving unrelated local configuration. Enable `fast_mode`,
-   the bounded missing-check timeout, release-after-checks and the explicit
-   repository checks; do not replace the whole file or remove other settings.
+   global config, preserving unrelated local configuration and current host paths.
+   Enable `fast_mode`, the independent reviewer profile, existing review budget
+   and working cap, bounded missing-check timeout, release-after-checks and
+   explicit repository checks. Do not replace the whole file or remove settings.
    Missing real commands on other repositories remain blocking, not AI discovery.
 2. Atomically replace the resolved executable with the verified staged binary;
    do not overwrite the launcher/symlink. Start using the new installed binary's
@@ -184,11 +185,14 @@ Only after section 5's successful guarded stop:
    config or recovery errors. Verify the live database's integrity. Record both
    the landed commit and the executable checksum, not just a version label.
 4. Smoke the **installed executable** with a disposable Git/Go fixture in an
-   isolated `NM_HOME` using a copy of the installed global config. Run real Test
-   and Lint commands, prove a passing change reaches Push and broken code cannot
-   publish even with `--yes`; inspect persisted fast-mode policy and zero
-   validation-agent invocations. Explicitly skipping external PR/CI for this
-   local transport smoke does not replace the real CI evidence from section 2.
+   isolated `NM_HOME` using a copy of the installed global config. Prove that a
+   real independent reviewer approves correct code, configured Test/Lint commands
+   pass and Push publishes the exact approved head. Then prove that an actual
+   source defect with passing tests/lint is blocked by Review even with `--yes`,
+   and explicitly skipping Review cannot publish. Record reviewer invocations,
+   elapsed time and preserved blocking findings; do not fabricate approval.
+   Explicitly skipping external PR/CI for this local transport smoke does not
+   replace the real CI evidence from section 2.
    Stop only the fixture's daemon and remove its scaffolding afterward.
 5. Inspect AXI against an existing initialized repository without reinitializing
    it. Verify the ordinary launcher reaches the healthy deployed daemon and

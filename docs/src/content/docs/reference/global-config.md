@@ -147,35 +147,42 @@ providers:
 
 ### fast_mode
 
-Opt-in, **machine-global-only** deterministic validation policy. Default: `false`.
+Opt-in, **machine-global-only** lean agentic-review policy. Default: `false`.
 Repository config and repository overrides cannot enable it.
 
-With `fast_mode: true`, **new runs** durably skip Review and Document, preserving
-explicit operator skips. Intent, Rebase, Test, Lint, Push, PR, and CI remain in
-the pipeline. Test and Lint execute their configured commands without AI review,
-fixing, documentation, or lint-discovery passes. Missing commands block rather
-than silently passing or falling back to an agent. PR drafting may still use an
-agent; this is not an entirely agent-free pipeline.
+With `fast_mode: true`, **new runs** durably skip Document, preserving explicit
+operator skips. Intent, Rebase, Review, Test, Lint, Push, PR, and CI remain in the
+pipeline. Review keeps the independent reviewer, authoritative intent, trusted
+path instructions, strict structured output and complete reviewable-path
+coverage. It makes one analyzer pass: malformed output fails without a full
+review retry, and missing coverage parks without an automatic completion pass.
+Native adapter transport retries still share the invocation's deadline.
+
+Test and Lint execute their configured commands without AI validation, fixing or
+discovery. Missing commands block rather than silently passing or falling back
+to an agent. PR drafting may still use an agent.
 
 All automatic repair budgets, including custom gates, resolve to zero regardless
 of repository overrides. Manual `fix` responses are also refused. `--yes` stops
 at a fast-mode gate instead of fixing or approving it. Failed or inconclusive
-validation cannot be approved as clean evidence: abort, repair outside the run,
-and submit a new run, or explicitly skip to record missing evidence.
+Review and required checks cannot be approved as clean evidence: deliberately
+stop the run, follow custody recovery, repair and commit outside the run, then
+submit a new run. Explicit Test/Lint skips remain recorded omissions, not clean
+checks; skipping Review cannot authorize publication.
 
-Fast publication uses the run's persisted policy, not a claimed review approval.
-Push requires a clean checkout at the exact recorded head and completed
-configured Test/Lint command evidence bound to that same head. A later commit,
-missing evidence, or changed command configuration requires validation again.
-Explicit operator skips remain recorded as missing evidence, and any recorded
-Test approval exception remains an exception rather than a clean check.
-Neither command-only validation nor publication claims an AI review or live
-product validation; normal custody, remote-verification, and push-lease guards
-still apply.
+Push requires durable review approval for the **exact** proposed commit, a clean
+checkout at that recorded head, and configured Test/Lint command evidence bound
+to the same head. Ancestor-only approval, a cached in-memory approval, a later
+commit, missing evidence or changed command configuration cannot authorize Push.
+Any recorded Test approval exception remains an exception. Source review and
+command checks do not claim live-product validation; normal custody,
+remote-verification and push-lease guards still apply.
 
 The admission decision is stored with the run. Changing this setting does not
-convert an already active run, and restarting the daemon preserves the original
-policy and skipped steps. Ordinary runs retain their existing behavior.
+convert an already active run, and restarting the daemon preserves its mode and
+scheduled skips. Historical commands-only fast runs keep their old Review skips
+and absent review approval; upgrading does not certify them. Ordinary runs retain
+their existing behavior.
 
 ### agent
 

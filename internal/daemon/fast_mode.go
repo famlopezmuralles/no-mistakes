@@ -13,10 +13,8 @@ func fastModeSkips(requested []types.StepName, fast bool) []types.StepName {
 		return requested
 	}
 	resolved := slices.Clone(requested)
-	for _, step := range []types.StepName{types.StepReview, types.StepDocument} {
-		if !slices.Contains(resolved, step) {
-			resolved = append(resolved, step)
-		}
+	if !slices.Contains(resolved, types.StepDocument) {
+		resolved = append(resolved, types.StepDocument)
 	}
 	return resolved
 }

@@ -408,11 +408,9 @@ Risk assessment (after listing all findings):
 	// RunSessions then re-runs the same turn cold, and a self-sufficient prompt
 	// makes that a slower review rather than a meaningless one.
 	//
-	// A review whose final JSON fails validation is a formatting slip, not a
-	// verdict, so it is rerun with the same prompt plus the validation error,
-	// up to reviewAnalyzerMaxAttempts. Findings come only from the attempt that
-	// validates. Every other failure returns at once, and so does a rejection
-	// from a turn its deadline or a cancellation cut short.
+	// Ordinary mode may retry invalid structured output. Fast mode spends one
+	// analysis invocation and leaves malformed output or incomplete coverage
+	// unapproved instead of starting another agent pass.
 	turnPrompt := prompt
 	sessionRole := pipeline.SessionRole("")
 	if convDir != "" && !sctx.Fixing {
@@ -453,6 +451,10 @@ Risk assessment (after listing all findings):
 		Purpose:    "review",
 		Workload:   workload,
 	}
+	maxAttempts := reviewAnalyzerMaxAttempts
+	if sctx.Config.FastMode {
+		maxAttempts = 1
+	}
 	var findings Findings
 	var validationErrors []error
 	if retained != nil {
@@ -475,13 +477,13 @@ Risk assessment (after listing all findings):
 				return nil, err
 			}
 			validationErrors = append(validationErrors, err)
-			if attempt == reviewAnalyzerMaxAttempts {
+			if attempt == maxAttempts {
 				if summary := distinctReviewValidationFailures(validationErrors); summary != "" {
-					return nil, agent.RejectStructuredOutput(fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", reviewAnalyzerMaxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err))
+					return nil, agent.RejectStructuredOutput(fmt.Errorf("validate review analyzer findings after %d attempts: output kept failing validation across distinct fields (%s): %sattempt %d: %w", maxAttempts, summary, reviewValidationAttempts(validationErrors[:attempt-1]), attempt, err))
 				}
-				return nil, agent.RejectStructuredOutput(fmt.Errorf("validate review analyzer findings after %d attempts: %w", reviewAnalyzerMaxAttempts, err))
+				return nil, agent.RejectStructuredOutput(fmt.Errorf("validate review analyzer findings after %d attempts: %w", maxAttempts, err))
 			}
-			sctx.Log(fmt.Sprintf("review analyzer findings rejected (%s); rerunning the review (attempt %d of %d)", strings.ReplaceAll(err.Error(), "\n", "; "), attempt+1, reviewAnalyzerMaxAttempts))
+			sctx.Log(fmt.Sprintf("review analyzer findings rejected (%s); rerunning the review (attempt %d of %d)", strings.ReplaceAll(err.Error(), "\n", "; "), attempt+1, maxAttempts))
 			opts.Prompt = turnPrompt + reviewRetryNote(err)
 		}
 	}
@@ -642,6 +644,9 @@ func reviewCoverageCompletionSection(missing []string) string {
 // reviewedPathsCoverReviewable, so an out-of-scope entry from either turn
 // still fails the round and is named in the park message.
 func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string, askDir string) (Findings, error) {
+	if sctx.Config.FastMode {
+		return findings, nil
+	}
 	if sctx.EvalReplay {
 		// Eval replay scores the review's findings against captured gold and
 		// never consumes the reviewed_paths certification, so the completion

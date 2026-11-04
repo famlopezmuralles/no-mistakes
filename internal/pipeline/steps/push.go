@@ -364,20 +364,22 @@ func updateGateMirrorAfterPush(ctx context.Context, sctx *pipeline.StepContext, 
 	return nil
 }
 
-// assertReviewApprovedPushHead enforces the run's durable publication policy:
-// review ancestry for ordinary runs, exact-head configured validation for fast
-// runs. Fast validation never creates or claims review approval.
+// assertReviewApprovedPushHead enforces durable review approval for every run.
+// Fast mode additionally binds review and configured checks to the exact head.
 func assertReviewApprovedPushHead(sctx *pipeline.StepContext, proposedHead string) error {
 	run, err := sctx.DB.GetRun(sctx.Run.ID)
 	if err != nil {
 		return fmt.Errorf("load durable review approval before push: %w", err)
 	}
-	if run != nil && run.FastMode {
-		return assertFastValidationPushHead(sctx, run, proposedHead)
-	}
 	approvedHead, reason := reviewApprovedHead(sctx, run)
 	if approvedHead == "" {
 		return fmt.Errorf("refusing to push: %s", reason)
+	}
+	if run.FastMode {
+		if proposedHead != approvedHead {
+			return fmt.Errorf("refusing fast-mode push: proposed head %s differs from review-approved head %s", shortObjectID(proposedHead), shortObjectID(approvedHead))
+		}
+		return assertFastValidationPushHead(sctx, run, proposedHead)
 	}
 	if proposedHead == approvedHead {
 		return nil
@@ -484,7 +486,7 @@ func assertFastValidationPushHead(sctx *pipeline.StepContext, run *db.Run, propo
 			}
 		}
 	}
-	sctx.Log("fast-mode publication authorized by exact-head configured checks and recorded exceptions only; Review was not performed")
+	sctx.Log("fast-mode publication authorized by exact-head agentic review, configured checks and recorded check exceptions")
 	return nil
 }
 

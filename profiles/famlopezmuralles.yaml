@@ -2,12 +2,18 @@
 # do not replace an installation that still owns active runs.
 fast_mode: true
 
-# Only PR drafting may use this agent. Validation uses configured commands.
+# Review and PR drafting use this agent; Test/Lint use configured commands.
 agent: pi
 agent_config:
   pi:
     model: deepseek/deepseek-flash
     effort: low
+
+# Bound silent reviews while allowing a still-working reviewer to finish.
+# These are failure bounds, not a target duration or permission to skip Review.
+review_agent_timeout: "10m"
+review_agent_working_timeout: "20m"
+agent_crash_retries: 0
 
 ci:
   # Missing checks are unverified, not green. Running checks keep their normal
@@ -18,8 +24,8 @@ ci:
 
 # Set commands.test and commands.lint in each repository's trusted config (or
 # use explicit machine-local additional checks). Missing commands block the run;
-# there is no AI discovery fallback. Fast mode also disables repair budgets,
-# skips Review and Document, and never substitutes a local pass for CI.
+# there is no AI discovery fallback. Fast mode keeps one independent review,
+# disables repair budgets and Document, and never substitutes a local pass for CI.
 
 # Operator-owned additions; they never replace a repository's trusted checks.
 repository_overrides:
@@ -32,7 +38,7 @@ repository_overrides:
     commands:
       test:
         additional:
-          - 'PYTHONPATH="$PWD:$PWD/src" /home/lopezc/centinela/env-centinela/bin/python -m pytest -o addopts= -p no:cacheprovider tests/core tests/strategy_factory/test_code_fingerprint.py tests/strategy_factory/test_e4_execution.py -x -q --no-header --no-cov'
+          - 'PYTHONPATH="$PWD:$PWD/src" /home/lopezc/centinela/.venv/bin/python -m pytest -o addopts= -p no:cacheprovider tests/core tests/strategy_factory/test_code_fingerprint.py tests/strategy_factory/test_e4_execution.py -x -q --no-header --no-cov'
       lint:
         additional:
-          - "/home/lopezc/centinela/env-centinela/bin/python -m compileall -q dags"
+          - "/home/lopezc/centinela/.venv/bin/python -m compileall -q dags"

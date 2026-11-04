@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
@@ -19,20 +20,19 @@ import (
 // Exercise the real executor, configured shell checks, and guarded Push against
 // a local bare upstream. The remote starts at base, so success requires an
 // actual publication rather than an already-up-to-date push.
-func TestPipelineFastModePublishesOnlyBoundConfiguredChecks(t *testing.T) {
+func TestPipelineFastModeRequiresReviewedConfiguredChecks(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
-		unpinned          bool
+		skipReview        bool
 		skipLint          bool
 		skipTest          bool
 		automaticLintSkip bool
 		mutate            func(*testing.T, *pipeline.StepContext)
 		wantError         string
 	}{
-		{name: "configured checks publish without review"},
 		{name: "explicit lint skip remains missing evidence", skipLint: true},
 		{name: "explicit test skip remains missing evidence", skipTest: true},
-		{name: "live config cannot enable publication policy", unpinned: true, wantError: "review skip prevents push"},
+		{name: "skipped review cannot publish", skipReview: true, wantError: "review skip prevents push"},
 		{name: "automatic lint skip is not operator consent", automaticLintSkip: true, wantError: "automatic lint skip"},
 		{name: "missing lint evidence", mutate: func(t *testing.T, sctx *pipeline.StepContext) {
 			if err := sctx.DB.ClearStepFindings(fastPushStep(t, sctx, types.StepLint).ID); err != nil {
@@ -57,7 +57,7 @@ func TestPipelineFastModePublishesOnlyBoundConfiguredChecks(t *testing.T) {
 				t.Fatal(err)
 			}
 			sctx.Run.HeadSHA = head
-		}, wantError: "test evidence is not bound"},
+		}, wantError: "differs from review-approved head"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			upstream := t.TempDir()
@@ -65,18 +65,24 @@ func TestPipelineFastModePublishesOnlyBoundConfiguredChecks(t *testing.T) {
 			dir, base, head := setupGitRepo(t)
 			gitCmd(t, dir, "remote", "add", "origin", upstream)
 			gitCmd(t, dir, "push", "origin", "main", base+":refs/heads/feature")
-			ag := &mockAgent{name: "test"}
+			findings := cleanReviewFindings()
+			findings.ReviewedPaths = fullReviewCoverage(t, dir, base)
+			payload, err := json.Marshal(findings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ag := &mockAgent{name: "test", runFn: func(context.Context, agent.RunOpts) (*agent.Result, error) {
+				return &agent.Result{Output: payload}, nil
+			}}
 			sctx := newTestContextWithDBRecords(t, ag, dir, base, head, config.Commands{
 				Test: "git rev-parse --verify HEAD", Lint: "git diff --exit-code",
 			})
 			sctx.Config.FastMode = true
 			sctx.Repo.UpstreamURL = upstream
-			if !tc.unpinned {
-				if err := sctx.DB.SetRunFastMode(sctx.Run.ID); err != nil {
-					t.Fatal(err)
-				}
-				sctx.Run.FastMode = true
+			if err := sctx.DB.SetRunFastMode(sctx.Run.ID); err != nil {
+				t.Fatal(err)
 			}
+			sctx.Run.FastMode = true
 			p := paths.WithRoot(t.TempDir())
 			if err := p.EnsureDirs(); err != nil {
 				t.Fatal(err)
@@ -101,7 +107,10 @@ func TestPipelineFastModePublishesOnlyBoundConfiguredChecks(t *testing.T) {
 			}
 			checks = append(checks, &PushStep{})
 			executor := pipeline.NewExecutor(sctx.DB, p, sctx.Config, ag, checks, nil)
-			skips := []types.StepName{types.StepReview, types.StepDocument}
+			skips := []types.StepName{types.StepDocument}
+			if tc.skipReview {
+				skips = append(skips, types.StepReview)
+			}
 			if tc.skipLint {
 				skips = append(skips, types.StepLint)
 			}
@@ -111,7 +120,7 @@ func TestPipelineFastModePublishesOnlyBoundConfiguredChecks(t *testing.T) {
 			executor.SetSkippedSteps(skips)
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 			defer cancel()
-			err := executor.Execute(ctx, sctx.Run, sctx.Repo, dir)
+			err = executor.Execute(ctx, sctx.Run, sctx.Repo, dir)
 			if tc.wantError == "" {
 				if err != nil {
 					t.Fatalf("publication failed: %v", err)
@@ -122,8 +131,8 @@ func TestPipelineFastModePublishesOnlyBoundConfiguredChecks(t *testing.T) {
 				if push := fastPushStep(t, sctx, types.StepPush); push.Status != types.StepStatusCompleted {
 					t.Fatalf("Push status = %s", push.Status)
 				}
-				if review := fastPushStep(t, sctx, types.StepReview); review.Status != types.StepStatusSkipped {
-					t.Fatalf("Review status = %s, want skipped", review.Status)
+				if review := fastPushStep(t, sctx, types.StepReview); review.Status != types.StepStatusCompleted {
+					t.Fatalf("Review status = %s, want completed", review.Status)
 				}
 				if tc.skipLint && fastPushStep(t, sctx, types.StepLint).Status != types.StepStatusSkipped {
 					t.Fatal("explicit missing lint evidence was not preserved")
@@ -143,11 +152,12 @@ func TestPipelineFastModePublishesOnlyBoundConfiguredChecks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if run.ReviewApprovedHeadSHA != nil {
-				t.Fatalf("fast validation invented review approval: %s", *run.ReviewApprovedHeadSHA)
-			}
-			if len(ag.calls) != 0 {
-				t.Fatalf("deterministic publication invoked %d agents", len(ag.calls))
+			if tc.skipReview {
+				if run.ReviewApprovedHeadSHA != nil || len(ag.calls) != 0 {
+					t.Fatal("skipped review gained approval or invoked an agent")
+				}
+			} else if run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != head || len(ag.calls) != 1 {
+				t.Fatalf("publication needs one independent review of %s; approved=%v calls=%d", head, run.ReviewApprovedHeadSHA, len(ag.calls))
 			}
 		})
 	}

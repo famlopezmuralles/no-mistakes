@@ -98,7 +98,7 @@ type Run struct {
 	// the repository's trusted pr.publish_intent is enforced independently
 	// by the PR step.
 	OmitIntent bool
-	// FastMode pins the operator's deterministic-validation policy at admission.
+	// FastMode pins the operator's lean review/check policy at admission.
 	FastMode bool
 	// PiProfile is immutable launch selection; nil retains legacy live config.
 	PiProfile *agentcfg.PiProfile

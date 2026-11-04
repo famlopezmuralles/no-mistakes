@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.109.0](https://github.com/famlopezmuralles/no-mistakes/compare/v1.108.0...v1.109.0) (2026-11-04)
+
+
+### Features
+
+* add a safe personal fork landing and upstream refresh runbook ([686692e](https://github.com/famlopezmuralles/no-mistakes/commit/686692ee83cc720c433cc9810047d29fd7947f3a))
+* add an opt-in command-only fast validation policy ([471faba](https://github.com/famlopezmuralles/no-mistakes/commit/471faba0fa1e8ab8a79bd90d2c96058c9a438394))
+* **fork:** restore lean independent agentic review ([942da2c](https://github.com/famlopezmuralles/no-mistakes/commit/942da2c7b1de2b10ba3deb55b83659c0669a1ecd))
+
+
+### Bug Fixes
+
+* **fork:** honor explicit focused coverage review ([5f3da64](https://github.com/famlopezmuralles/no-mistakes/commit/5f3da64b1905953c344c2861b21efb86cf57442d))
+* include generated file modes in upstream import verification ([b43c37b](https://github.com/famlopezmuralles/no-mistakes/commit/b43c37bc447ad2c1073a9e34a8f49d3529ba003a))
+* verify upstream-generated release imports without weakening the guard ([7abdd12](https://github.com/famlopezmuralles/no-mistakes/commit/7abdd126254cb8a7f5ac9b2b023e16a4017b4647))
+
 ## [1.108.0](https://github.com/kunchenguid/no-mistakes/compare/v1.107.1...v1.108.0) (2026-11-02)
 
 

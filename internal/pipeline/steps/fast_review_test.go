@@ -12,6 +12,7 @@ import (
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/config"
+	"github.com/kunchenguid/no-mistakes/internal/ipc"
 	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/types"
@@ -108,10 +109,9 @@ func TestReviewStepFastModeMalformedOutputDoesNotRetryOrPublish(t *testing.T) {
 	}
 }
 
-// Current command evidence cannot release a blocked Review. In particular, an
-// otherwise clean partial review must park, not spend a second agent turn or
-// allow manual approval to silently waive the missing coverage.
-func TestReviewStepFastModeFindingsAndCoverageRemainBlocked(t *testing.T) {
+// Current command evidence cannot release blocked Review. A coverage gap needs
+// an explicitly requested focused review, never approval or an automatic repair.
+func TestReviewStepFastModeGatesRequireReviewEvidence(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name   string
@@ -178,6 +178,40 @@ func TestReviewStepFastModeFindingsAndCoverageRemainBlocked(t *testing.T) {
 			if got := fastPushStep(t, sctx, types.StepReview).Status; got != types.StepStatusAwaitingApproval {
 				t.Fatalf("refused response released Review: %s", got)
 			}
+			if tc.gap {
+				assertFastReviewInvocation(t, ag)
+				assertFastReviewHasNoAuthority(t, sctx)
+				assertFastReviewUnpublished(t, sctx, upstream)
+				rounds, err := sctx.DB.GetRoundsByStep(review.ID)
+				if err != nil || len(rounds) != 1 {
+					t.Fatalf("read parked coverage round: %+v, %v", rounds, err)
+				}
+				binding := &ipc.CoverageBinding{HeadSHA: sctx.Run.HeadSHA, StepResultID: review.ID, RoundID: rounds[0].ID}
+				if _, err := executor.RespondWithOverrides(types.StepReview, types.ActionCompleteCoverage, nil, nil, nil, nil, "", pipeline.ResponseOptions{Coverage: binding}); err != nil {
+					t.Fatalf("explicit coverage continuation refused: %v", err)
+				}
+				select {
+				case err := <-done:
+					stopped = true
+					cancel()
+					if err != nil {
+						t.Fatalf("explicit focused coverage did not release publication: %v", err)
+					}
+				case <-time.After(30 * time.Second):
+					t.Fatal("accepted coverage continuation did no work or failed to release publication")
+				}
+				run, err := sctx.DB.GetRun(sctx.Run.ID)
+				if err != nil || run.ReviewApprovedHeadSHA == nil || *run.ReviewApprovedHeadSHA != sctx.Run.HeadSHA {
+					t.Fatalf("completed coverage has no durable exact-head approval: %+v, %v", run, err)
+				}
+				if got := gitCmd(t, upstream, "rev-parse", "refs/heads/feature"); got != sctx.Run.HeadSHA {
+					t.Fatalf("completed coverage published %s, want %s", got, sctx.Run.HeadSHA)
+				}
+				if len(ag.calls) != 2 || ag.calls[1].Purpose != "review-coverage" {
+					t.Fatalf("explicit continuation made %d invocations; want only one focused follow-up", len(ag.calls))
+				}
+				return
+			}
 			stop()
 			assertFastReviewInvocation(t, ag)
 			assertFastReviewHasNoAuthority(t, sctx)
@@ -200,6 +234,7 @@ func newFastReviewFixture(t *testing.T, ag agent.Agent) (*pipeline.StepContext, 
 		Test: "git rev-parse --verify HEAD", Lint: "git diff --exit-code",
 	})
 	sctx.Config.FastMode = true
+	sctx.Config.TrustedConfigSHA = base
 	sctx.Run.FastMode = true
 	sctx.Repo.UpstreamURL = upstream
 	if err := sctx.DB.SetRunFastMode(sctx.Run.ID); err != nil {

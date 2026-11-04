@@ -644,7 +644,7 @@ func reviewCoverageCompletionSection(missing []string) string {
 // reviewedPathsCoverReviewable, so an out-of-scope entry from either turn
 // still fails the round and is named in the park message.
 func (s *ReviewStep) completeCoverageGaps(sctx *pipeline.StepContext, basePrompt string, role pipeline.SessionRole, opts agent.RunOpts, findings Findings, reviewable []string, askDir string) (Findings, error) {
-	if sctx.Config.FastMode {
+	if sctx.Config.FastMode && sctx.CoverageContinuation == nil {
 		return findings, nil
 	}
 	if sctx.EvalReplay {

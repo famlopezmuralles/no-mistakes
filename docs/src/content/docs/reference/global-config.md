@@ -154,8 +154,10 @@ With `fast_mode: true`, **new runs** durably skip Document, preserving explicit
 operator skips. Intent, Rebase, Review, Test, Lint, Push, PR, and CI remain in the
 pipeline. Review keeps the independent reviewer, authoritative intent, trusted
 path instructions, strict structured output and complete reviewable-path
-coverage. It makes one analyzer pass: malformed output fails without a full
-review retry, and missing coverage parks without an automatic completion pass.
+coverage. It makes one initial analyzer pass: malformed output fails without a
+full review retry, and missing coverage parks without an automatic completion
+pass. An explicit `complete-coverage` response may invoke the same independent
+reviewer over the remaining paths, using the existing source-bound continuation.
 Native adapter transport retries still share the invocation's deadline.
 
 Test and Lint execute their configured commands without AI validation, fixing or

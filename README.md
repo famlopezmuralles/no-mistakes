@@ -55,9 +55,10 @@ The [personal preset](profiles/famlopezmuralles.yaml):
 
 - keeps an independent reviewer for the full reviewable change, with the existing
   trusted instructions and configured reviewer model;
-- makes one analyzer pass instead of replaying the review to repair malformed
-  output or automatically completing missing coverage; invalid output fails and
-  incomplete coverage stays blocked;
+- makes one initial analyzer pass instead of replaying the review to repair
+  malformed output or automatically completing missing coverage; invalid output
+  fails and incomplete coverage stays blocked until an explicit focused
+  `complete-coverage` request reviews the remaining paths;
 - skips Document and runs configured Test/Lint commands without validation agents
   or automatic repairs, including when the driver uses `--yes`;
 - requires durable review approval and configured checks for the exact published

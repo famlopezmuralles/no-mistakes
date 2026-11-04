@@ -672,6 +672,9 @@ func (rv runView) gateFields(gate stepView, runID string, inspectionOnly bool) [
 		help = append(help, "Run `no-mistakes axi abort"+runFlag(runID)+"` when you intend to discard this run; follow any offered branch_sync recovery, fix and commit locally, then start a new validation run")
 		if gate.Name == string(types.StepReview) {
 			help = append(help, "Fast-mode publication requires complete agentic Review; skipping Review cannot authorize Push.")
+			if pipeline.CanContinueReviewCoverage(types.StepReview, gate.FindingsJSON) {
+				help = append(help, "Run `no-mistakes axi respond"+runFlag(runID)+" --action complete-coverage` to explicitly review only the remaining paths at this bound source")
+			}
 		} else if !pipeline.HasProtectedPathRefusal(gate.FindingsJSON) && !pipeline.HasUnvalidatedWorkRefusal(gate.FindingsJSON) {
 			help = append(help, "Only if you deliberately waive this check, run `no-mistakes axi respond"+runFlag(runID)+" --action skip`; the omission remains recorded, not a passing check")
 		}

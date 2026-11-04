@@ -73,7 +73,7 @@ func TestFastModeNewRunsPersistDefaultSkips(t *testing.T) {
 			}
 			for _, record := range records {
 				want := types.StepStatusCompleted
-				if record.StepName == types.StepPush || fast && (record.StepName == types.StepReview || record.StepName == types.StepDocument) {
+				if record.StepName == types.StepPush || fast && record.StepName == types.StepDocument {
 					want = types.StepStatusSkipped
 				}
 				if record.Status != want {

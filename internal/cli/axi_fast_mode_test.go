@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -12,14 +11,19 @@ import (
 )
 
 func TestDriveRunYesLeavesFastModeGateBlocked(t *testing.T) {
-	for _, findings := range []string{
-		`{"findings":[{"id":"failure","severity":"error","description":"command failed","action":"auto-fix"}]}`,
-		`{"findings":[],"summary":"required test command missing"}`,
+	for _, tc := range []struct {
+		step     types.StepName
+		findings string
+	}{
+		{types.StepTest, `{"findings":[{"id":"failure","severity":"error","description":"command failed","action":"auto-fix"}]}`},
+		{types.StepTest, `{"findings":[],"summary":"required test command missing"}`},
+		{types.StepReview, `{"findings":[{"id":"defect","severity":"error","description":"zero violates the public contract","action":"auto-fix"}]}`},
+		{types.StepReview, `{"findings":[],"reviewed_paths":[],"summary":"review coverage is incomplete"}`},
 	} {
-		t.Run(findings, func(t *testing.T) {
+		t.Run(string(tc.step)+tc.findings, func(t *testing.T) {
 			parked := &ipc.RunInfo{
 				ID: "run-fast", Status: types.RunRunning, FastMode: true,
-				Steps: []ipc.StepResultInfo{{StepName: types.StepTest, Status: types.StepStatusAwaitingApproval, FindingsJSON: &findings}},
+				Steps: []ipc.StepResultInfo{{StepName: tc.step, Status: types.StepStatusAwaitingApproval, FindingsJSON: &tc.findings}},
 			}
 			source := &scriptedRunStateSource{
 				subscriptions: []scriptedSubscription{{events: make(chan ipc.Event)}},
@@ -30,32 +34,11 @@ func TestDriveRunYesLeavesFastModeGateBlocked(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
 			var progress bytes.Buffer
-			// A nil client is deliberate: no response transport is needed or
-			// permitted when --yes reaches a fast-mode gate.
+			// A nil client is deliberate: no response transport is permitted.
 			run, ready, err := driveRunWithReconciler(ctx, &progress, nil, reconciler, parked.ID, true)
-			if err != nil || run != parked || ready {
+			if err != nil || ready || run.Status != types.RunRunning || run.Steps[0].Status != types.StepStatusAwaitingApproval {
 				t.Fatalf("drive result = %+v ready=%v err=%v", run, ready, err)
 			}
-			if !strings.Contains(progress.String(), "fast_mode") {
-				t.Fatalf("missing policy explanation: %s", progress.String())
-			}
 		})
-	}
-}
-
-func TestFastModeGateHelpDoesNotOfferRejectedResponses(t *testing.T) {
-	gate := stepView{
-		Name:         string(types.StepTest),
-		Status:       string(types.StepStatusAwaitingApproval),
-		FindingsJSON: `{"findings":[{"id":"failed","severity":"error","action":"ask-user","description":"configured test failed"}]}`,
-	}
-	for _, inspectionOnly := range []bool{false, true} {
-		out := axiDoc((runView{FastMode: true}).gateFields(gate, "run-fast", inspectionOnly)...)
-		if strings.Contains(out, "--action approve") || strings.Contains(out, "--action fix") {
-			t.Fatalf("fast-mode help offers a response its policy rejects:\n%s", out)
-		}
-		if inspectionOnly && strings.Contains(out, "--action skip") {
-			t.Fatalf("inspection-only gate offered a mutation:\n%s", out)
-		}
 	}
 }

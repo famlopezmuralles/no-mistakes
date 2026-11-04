@@ -47,15 +47,22 @@ Full documentation: <https://kunchenguid.github.io/no-mistakes/>
 
 ## Personal fast policy (this fork)
 
-This fork adds an opt-in, operator-owned `fast_mode`. It is a lighter validation
-policy, not a claim that AI review or live-product validation happened faster.
-The normal upstream policy remains the default.
+This fork adds an opt-in, operator-owned `fast_mode` for lean **agentic code
+review**. It removes duplicate work, not the independent review. The normal
+upstream policy remains the default.
 
 The [personal preset](profiles/famlopezmuralles.yaml):
 
-- records Review and Document as skipped;
-- runs configured Test and Lint commands without validation agents or automatic
-  repairs, including when the driver uses `--yes`;
+- keeps an independent reviewer for the full reviewable change, with the existing
+  trusted instructions and configured reviewer model;
+- makes one initial analyzer pass instead of replaying the review to repair
+  malformed output or automatically completing missing coverage; invalid output
+  fails and incomplete coverage stays blocked until an explicit focused
+  `complete-coverage` request reviews the remaining paths;
+- skips Document and runs configured Test/Lint commands without validation agents
+  or automatic repairs, including when the driver uses `--yes`;
+- requires durable review approval and configured checks for the exact published
+  commit; skipping Review cannot authorize Push;
 - blocks missing commands, nonzero exits, and checks that change the pinned
   checkout instead of declaring them passed;
 - keeps real CI mandatory, bounds missing-check registration to 60 seconds, and
@@ -63,10 +70,14 @@ The [personal preset](profiles/famlopezmuralles.yaml):
 - pins the policy on new runs, so changing the global profile does not convert
   an existing run during recovery.
 
-PR drafting may still use the configured agent. Command-only evidence does not
-claim successful live-product validation. Explicitly skipped checks remain
-visible omissions. CI jobs that have registered retain their normal execution
-budget; an empty check list is never green.
+The preset uses the existing 10-minute review budget and 20-minute still-working
+cap, with low reasoning effort and no executor crash replay. These are failure
+bounds, not promised latency. Native adapter transport retries remain within the
+invocation budget; one analyzer pass is not a promise of one provider request.
+PR drafting may also use an agent. Neither source review nor command checks claim
+live-product validation. Explicitly skipped Test/Lint checks remain visible
+omissions. CI jobs that have registered retain their normal execution budget;
+an empty check list is never green.
 
 The inherited attestation workflow's owner exemption follows
 `github.repository_owner`, rather than the upstream author's account. It reports
@@ -89,7 +100,7 @@ one-line installer below installs upstream.
 
 The preset includes explicit additional checks for this fork and Centinela.
 Its Centinela commands use the owner's WSL Python environment at
-`/home/lopezc/centinela/env-centinela/bin/python`; adjust that personal path on
+`/home/lopezc/centinela/.venv/bin/python`; adjust that personal path on
 another host. These additions never replace trusted repository commands. Other
 repositories must configure their own real Test/Lint commands; fast mode refuses
 to invent them. See the [global config reference](docs/src/content/docs/reference/global-config.md#fast_mode)
